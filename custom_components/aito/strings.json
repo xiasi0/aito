@@ -1,0 +1,104 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "AITO Login",
+        "description": "Open the [Huawei login link]({login_url}) in a browser.\n\nAfter QR login finishes and the browser redirects, copy the callback URL from the address bar. It should start with `https://xop.xcar.test.vmall.com/` and include `code` and `state`.\n\nAITO vehicle service allows only one active service session per Huawei account. For stable Home Assistant use, create or authorize a dedicated Huawei account in the AITO app and use that account for this integration.",
+        "data": {
+          "auth_callback": "Browser callback URL"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to AITO service. Please try again later.",
+      "invalid_auth_code": "The login callback URL is invalid. Please copy it again.",
+      "no_vehicles": "Login succeeded, but no vehicles were returned for this account.",
+      "state_mismatch": "Login state does not match. Please open the login link again."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "AITO Options",
+        "data": {
+          "scan_interval": "Polling interval (seconds)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "battery_level": {
+        "name": "Battery"
+      },
+      "battery_temperature": {
+        "name": "Battery temperature"
+      },
+      "range": {
+        "name": "Range"
+      },
+      "electric_range": {
+        "name": "Electric range"
+      },
+      "energy_consumption": {
+        "name": "Energy consumption"
+      },
+      "fuel_level": {
+        "name": "Fuel level"
+      },
+      "fuel_range": {
+        "name": "Fuel range"
+      },
+      "charging_status": {
+        "name": "Charging status"
+      },
+      "charger_connected": {
+        "name": "Charger connected"
+      },
+      "charge_remaining_time": {
+        "name": "Charge remaining time"
+      },
+      "charging_power": {
+        "name": "Charging power"
+      },
+      "charging_voltage": {
+        "name": "Charging voltage"
+      },
+      "charging_current": {
+        "name": "Charging current"
+      },
+      "front_left_tire_pressure": {
+        "name": "Front left tire pressure"
+      },
+      "front_right_tire_pressure": {
+        "name": "Front right tire pressure"
+      },
+      "rear_left_tire_pressure": {
+        "name": "Rear left tire pressure"
+      },
+      "rear_right_tire_pressure": {
+        "name": "Rear right tire pressure"
+      },
+      "front_left_tire_status": {
+        "name": "Front left tire status"
+      },
+      "front_right_tire_status": {
+        "name": "Front right tire status"
+      },
+      "rear_left_tire_status": {
+        "name": "Rear left tire status"
+      },
+      "rear_right_tire_status": {
+        "name": "Rear right tire status"
+      },
+      "tire_status": {
+        "name": "Tire status"
+      }
+    },
+    "binary_sensor": {
+      "data_available": {
+        "name": "Data available"
+      }
+    }
+  }
+}

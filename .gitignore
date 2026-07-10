@@ -1,0 +1,8 @@
+token_store.json
+*.har
+loginCallback*.txt
+*.tmp
+.tmp/
+__pycache__/
+.pytest_cache/
+tests/

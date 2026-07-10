@@ -1,0 +1,320 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "AITO 登录",
+        "description": "在浏览器中打开[华为登录链接]({login_url})。\n\n扫码登录并等待浏览器跳转后，复制地址栏里的回调 URL。URL 应该以 `https://xop.xcar.test.vmall.com/` 开头，并包含 `code` 和 `state`。\n\nAITO 车服务同一华为账号通常只能保持一个有效服务会话。为了稳定使用 Home Assistant，建议在 AITO App 中单独授权一个华为账号，并将该账号专用于本集成。",
+        "data": {
+          "auth_callback": "浏览器地址栏回调 URL"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "无法连接 AITO 服务，请稍后重试。",
+      "invalid_auth_code": "登录回调 URL 无效，请重新复制。",
+      "no_vehicles": "登录成功，但该账号没有返回车辆。",
+      "state_mismatch": "登录状态不匹配，请重新打开登录链接。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "AITO 选项",
+        "data": {
+          "scan_interval": "轮询间隔（秒）"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "battery_level": {
+        "name": "电池电量"
+      },
+      "battery_temperature": {
+        "name": "电池温度"
+      },
+      "range": {
+        "name": "续航里程"
+      },
+      "electric_range": {
+        "name": "纯电续航"
+      },
+      "energy_consumption": {
+        "name": "能耗"
+      },
+      "fuel_level": {
+        "name": "燃油余量"
+      },
+      "fuel_range": {
+        "name": "燃油续航"
+      },
+      "charging_status": {
+        "name": "充电状态",
+        "state": {
+          "initial": "初始",
+          "connected_not_charging": "已连接未充电",
+          "ac_charging": "交流充电中",
+          "dc_charging": "直流充电中",
+          "full": "已充满",
+          "fault": "故障",
+          "charging": "充电中",
+          "charge_end": "充电结束",
+          "delayed_charging": "延迟充电",
+          "charge_connection": "充电连接中",
+          "wireless_charging": "无线充电中",
+          "super_charging": "超充中",
+          "ac_charging_preheating": "交流充电预热",
+          "wireless_charging_preheating": "无线充电预热",
+          "dc_charging_preheating": "直流充电预热",
+          "ac_charging_insulating": "交流充电保温",
+          "wireless_charging_insulating": "无线充电保温",
+          "dc_charging_insulating": "直流充电保温",
+          "charging_heating": "充电加热",
+          "scheduled_charging": "预约充电"
+        }
+      },
+      "charger_connected": {
+        "name": "充电枪连接"
+      },
+      "charge_remaining_time": {
+        "name": "剩余充电时间"
+      },
+      "charging_power": {
+        "name": "充电功率"
+      },
+      "charging_voltage": {
+        "name": "充电电压"
+      },
+      "charging_current": {
+        "name": "充电电流"
+      },
+      "front_left_tire_pressure": {
+        "name": "左前胎压"
+      },
+      "front_right_tire_pressure": {
+        "name": "右前胎压"
+      },
+      "rear_left_tire_pressure": {
+        "name": "左后胎压"
+      },
+      "rear_right_tire_pressure": {
+        "name": "右后胎压"
+      },
+      "front_left_tire_status": {
+        "name": "左前轮胎状态",
+        "state": {
+          "invalid": "无效",
+          "normal": "胎压正常",
+          "high_pressure": "胎压高",
+          "low_pressure": "胎压低",
+          "pressure_low": "胎压低"
+        }
+      },
+      "front_right_tire_status": {
+        "name": "右前轮胎状态",
+        "state": {
+          "invalid": "无效",
+          "normal": "胎压正常",
+          "high_pressure": "胎压高",
+          "low_pressure": "胎压低",
+          "pressure_low": "胎压低"
+        }
+      },
+      "rear_left_tire_status": {
+        "name": "左后轮胎状态",
+        "state": {
+          "invalid": "无效",
+          "normal": "胎压正常",
+          "high_pressure": "胎压高",
+          "low_pressure": "胎压低",
+          "pressure_low": "胎压低"
+        }
+      },
+      "rear_right_tire_status": {
+        "name": "右后轮胎状态",
+        "state": {
+          "invalid": "无效",
+          "normal": "胎压正常",
+          "high_pressure": "胎压高",
+          "low_pressure": "胎压低",
+          "pressure_low": "胎压低"
+        }
+      },
+      "tire_status": {
+        "name": "轮胎状态",
+        "state": {
+          "invalid": "无效",
+          "normal": "胎压正常",
+          "high_pressure": "胎压高",
+          "low_pressure": "胎压低",
+          "pressure_low": "胎压低"
+        }
+      },
+      "front_left_tire_temperature": {
+        "name": "左前胎温"
+      },
+      "front_right_tire_temperature": {
+        "name": "右前胎温"
+      },
+      "rear_left_tire_temperature": {
+        "name": "左后胎温"
+      },
+      "rear_right_tire_temperature": {
+        "name": "右后胎温"
+      },
+      "front_left_tire_temperature_status": {
+        "name": "左前胎温状态",
+        "state": {
+          "invalid": "无效",
+          "normal": "胎温正常",
+          "high_temperature": "胎温高"
+        }
+      },
+      "front_right_tire_temperature_status": {
+        "name": "右前胎温状态",
+        "state": {
+          "invalid": "无效",
+          "normal": "胎温正常",
+          "high_temperature": "胎温高"
+        }
+      },
+      "rear_left_tire_temperature_status": {
+        "name": "左后胎温状态",
+        "state": {
+          "invalid": "无效",
+          "normal": "胎温正常",
+          "high_temperature": "胎温高"
+        }
+      },
+      "rear_right_tire_temperature_status": {
+        "name": "右后胎温状态",
+        "state": {
+          "invalid": "无效",
+          "normal": "胎温正常",
+          "high_temperature": "胎温高"
+        }
+      },
+      "vehicle_status": {
+        "name": "车辆状态",
+        "state": {
+          "initial": "初始",
+          "started": "已启动",
+          "stalled": "熄火/停止"
+        }
+      },
+      "speed": {
+        "name": "车速"
+      },
+      "gear": {
+        "name": "档位",
+        "state": {
+          "n": "N 档",
+          "r": "R 档",
+          "d": "D 档",
+          "p": "P 档"
+        }
+      },
+      "power_status": {
+        "name": "电源状态",
+        "state": {
+          "off": "OFF",
+          "acc": "ACC",
+          "on": "ON",
+          "start": "START"
+        }
+      },
+      "running_status": {
+        "name": "运行状态",
+        "state": {
+          "parked": "驻车/停止",
+          "driving": "行驶中",
+          "preparing": "准备中"
+        }
+      },
+      "remaining_mileage_mode": {
+        "name": "续航模式",
+        "state": {
+          "wltc": "WLTC",
+          "nedc": "NEDC",
+          "sum": "综合",
+          "cltc": "CLTC"
+        }
+      }
+    },
+    "binary_sensor": {
+      "data_available": {
+        "name": "车辆数据可用"
+      },
+      "front_left_door_open": {
+        "name": "左前门"
+      },
+      "front_right_door_open": {
+        "name": "右前门"
+      },
+      "rear_left_door_open": {
+        "name": "左后门"
+      },
+      "rear_right_door_open": {
+        "name": "右后门"
+      },
+      "trunk_open": {
+        "name": "后备箱"
+      },
+      "front_hood_open": {
+        "name": "前舱盖"
+      },
+      "charge_port_door_open": {
+        "name": "充电口盖"
+      },
+      "front_left_window_open": {
+        "name": "左前车窗"
+      },
+      "front_right_window_open": {
+        "name": "右前车窗"
+      },
+      "rear_left_window_open": {
+        "name": "左后车窗"
+      },
+      "rear_right_window_open": {
+        "name": "右后车窗"
+      },
+      "sunroof_open": {
+        "name": "天窗"
+      },
+      "high_beam_on": {
+        "name": "远光灯"
+      },
+      "low_beam_on": {
+        "name": "近光灯"
+      },
+      "position_lamp_on": {
+        "name": "位置灯"
+      },
+      "front_left_tire_sensor_low_battery": {
+        "name": "左前胎压传感器低电量"
+      },
+      "front_right_tire_sensor_low_battery": {
+        "name": "右前胎压传感器低电量"
+      },
+      "rear_left_tire_sensor_low_battery": {
+        "name": "左后胎压传感器低电量"
+      },
+      "rear_right_tire_sensor_low_battery": {
+        "name": "右后胎压传感器低电量"
+      },
+      "vehicle_online": {
+        "name": "车辆在线"
+      },
+      "vehicle_driving": {
+        "name": "车辆行驶"
+      },
+      "handbrake_on": {
+        "name": "手刹"
+      },
+      "alarm_active": {
+        "name": "报警"
+      }
+    }
+  }
+}
