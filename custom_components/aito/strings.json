@@ -3,18 +3,28 @@
     "step": {
       "user": {
         "title": "AITO Login",
-        "description": "Open the [Huawei login link]({login_url}) in a browser.\n\nAfter QR login finishes and the browser redirects, copy the callback URL from the address bar. It should start with `https://xop.xcar.test.vmall.com/` and include `code` and `state`.\n\nAITO vehicle service allows only one active service session per Huawei account. For stable Home Assistant use, create or authorize a dedicated Huawei account in the AITO app and use that account for this integration.",
+        "description": "Use a Huawei account with AITO vehicle service access. The first setup requires an SMS verification code. The integration encrypts and stores the account password and a stable device identity locally to maintain the session. A dedicated Home Assistant account is recommended because signing in to the AITO app or another device with the same account may require the integration to authenticate again.",
         "data": {
-          "auth_callback": "Browser callback URL"
+          "phone": "Huawei account phone number",
+          "password": "Huawei account password"
+        }
+      },
+      "sms": {
+        "title": "SMS Verification",
+        "description": "Enter the SMS verification code sent to this Huawei account phone number. The code is used only to verify this first sign-in.",
+        "data": {
+          "sms_code": "SMS verification code"
         }
       }
     },
     "error": {
       "cannot_connect": "Cannot connect to AITO service. Please try again later.",
-      "invalid_auth_code": "The login callback URL is invalid. Please copy it again.",
-      "no_vehicles": "Login succeeded, but no vehicles were returned for this account.",
-      "state_mismatch": "Login state does not match. Please open the login link again."
+      "invalid_auth": "Huawei account authentication failed. Check the phone number, password, and SMS verification code.",
+      "no_vehicles": "Login succeeded, but no vehicles were returned for this account."
     }
+  },
+  "abort": {
+    "reauth_successful": "AITO authentication was updated successfully."
   },
   "options": {
     "step": {
@@ -50,7 +60,29 @@
         "name": "Fuel range"
       },
       "charging_status": {
-        "name": "Charging status"
+        "name": "Charging status",
+        "state": {
+          "initial": "Initial",
+          "connected_not_charging": "Connected, not charging",
+          "ac_charging": "AC charging",
+          "dc_charging": "DC charging",
+          "full": "Full",
+          "fault": "Fault",
+          "charging": "Charging",
+          "charge_end": "Charge ended",
+          "delayed_charging": "Delayed charging",
+          "charge_connection": "Charge connection",
+          "wireless_charging": "Wireless charging",
+          "super_charging": "Super charging",
+          "ac_charging_preheating": "AC charging preheating",
+          "wireless_charging_preheating": "Wireless charging preheating",
+          "dc_charging_preheating": "DC charging preheating",
+          "ac_charging_insulating": "AC charging insulation",
+          "wireless_charging_insulating": "Wireless charging insulation",
+          "dc_charging_insulating": "DC charging insulation",
+          "charging_heating": "Charging heating",
+          "scheduled_charging": "Scheduled charging"
+        }
       },
       "charger_connected": {
         "name": "Charger connected"
@@ -80,24 +112,218 @@
         "name": "Rear right tire pressure"
       },
       "front_left_tire_status": {
-        "name": "Front left tire status"
+        "name": "Front left tire status",
+        "state": {
+          "invalid": "Invalid",
+          "normal": "Normal",
+          "high_pressure": "High pressure",
+          "low_pressure": "Low pressure",
+          "pressure_low": "Low pressure"
+        }
       },
       "front_right_tire_status": {
-        "name": "Front right tire status"
+        "name": "Front right tire status",
+        "state": {
+          "invalid": "Invalid",
+          "normal": "Normal",
+          "high_pressure": "High pressure",
+          "low_pressure": "Low pressure",
+          "pressure_low": "Low pressure"
+        }
       },
       "rear_left_tire_status": {
-        "name": "Rear left tire status"
+        "name": "Rear left tire status",
+        "state": {
+          "invalid": "Invalid",
+          "normal": "Normal",
+          "high_pressure": "High pressure",
+          "low_pressure": "Low pressure",
+          "pressure_low": "Low pressure"
+        }
       },
       "rear_right_tire_status": {
-        "name": "Rear right tire status"
+        "name": "Rear right tire status",
+        "state": {
+          "invalid": "Invalid",
+          "normal": "Normal",
+          "high_pressure": "High pressure",
+          "low_pressure": "Low pressure",
+          "pressure_low": "Low pressure"
+        }
       },
       "tire_status": {
-        "name": "Tire status"
+        "name": "Tire status",
+        "state": {
+          "invalid": "Invalid",
+          "normal": "Normal",
+          "high_pressure": "High pressure",
+          "low_pressure": "Low pressure",
+          "pressure_low": "Low pressure"
+        }
+      },
+      "front_left_tire_temperature": {
+        "name": "Front left tire temperature"
+      },
+      "front_right_tire_temperature": {
+        "name": "Front right tire temperature"
+      },
+      "rear_left_tire_temperature": {
+        "name": "Rear left tire temperature"
+      },
+      "rear_right_tire_temperature": {
+        "name": "Rear right tire temperature"
+      },
+      "front_left_tire_temperature_status": {
+        "name": "Front left tire temperature status",
+        "state": {
+          "invalid": "Invalid",
+          "normal": "Normal",
+          "high_temperature": "High temperature"
+        }
+      },
+      "front_right_tire_temperature_status": {
+        "name": "Front right tire temperature status",
+        "state": {
+          "invalid": "Invalid",
+          "normal": "Normal",
+          "high_temperature": "High temperature"
+        }
+      },
+      "rear_left_tire_temperature_status": {
+        "name": "Rear left tire temperature status",
+        "state": {
+          "invalid": "Invalid",
+          "normal": "Normal",
+          "high_temperature": "High temperature"
+        }
+      },
+      "rear_right_tire_temperature_status": {
+        "name": "Rear right tire temperature status",
+        "state": {
+          "invalid": "Invalid",
+          "normal": "Normal",
+          "high_temperature": "High temperature"
+        }
+      },
+      "vehicle_status": {
+        "name": "Vehicle status",
+        "state": {
+          "initial": "Initial",
+          "started": "Started",
+          "stalled": "Stopped"
+        }
+      },
+      "speed": {
+        "name": "Speed"
+      },
+      "gear": {
+        "name": "Gear",
+        "state": {
+          "n": "N",
+          "r": "R",
+          "d": "D",
+          "p": "P"
+        }
+      },
+      "power_status": {
+        "name": "Power status",
+        "state": {
+          "off": "OFF",
+          "acc": "ACC",
+          "on": "ON",
+          "start": "START"
+        }
+      },
+      "running_status": {
+        "name": "Running status",
+        "state": {
+          "parked": "Parked",
+          "driving": "Driving",
+          "preparing": "Preparing"
+        }
+      },
+      "remaining_mileage_mode": {
+        "name": "Remaining mileage mode",
+        "state": {
+          "wltc": "WLTC",
+          "nedc": "NEDC",
+          "sum": "Combined",
+          "cltc": "CLTC"
+        }
       }
     },
     "binary_sensor": {
       "data_available": {
         "name": "Data available"
+      },
+      "front_left_door_open": {
+        "name": "Front left door"
+      },
+      "front_right_door_open": {
+        "name": "Front right door"
+      },
+      "rear_left_door_open": {
+        "name": "Rear left door"
+      },
+      "rear_right_door_open": {
+        "name": "Rear right door"
+      },
+      "trunk_open": {
+        "name": "Trunk"
+      },
+      "front_hood_open": {
+        "name": "Front hood"
+      },
+      "charge_port_door_open": {
+        "name": "Charge port door"
+      },
+      "front_left_window_open": {
+        "name": "Front left window"
+      },
+      "front_right_window_open": {
+        "name": "Front right window"
+      },
+      "rear_left_window_open": {
+        "name": "Rear left window"
+      },
+      "rear_right_window_open": {
+        "name": "Rear right window"
+      },
+      "sunroof_open": {
+        "name": "Sunroof"
+      },
+      "high_beam_on": {
+        "name": "High beam"
+      },
+      "low_beam_on": {
+        "name": "Low beam"
+      },
+      "position_lamp_on": {
+        "name": "Position lamp"
+      },
+      "front_left_tire_sensor_low_battery": {
+        "name": "Front left tire sensor low battery"
+      },
+      "front_right_tire_sensor_low_battery": {
+        "name": "Front right tire sensor low battery"
+      },
+      "rear_left_tire_sensor_low_battery": {
+        "name": "Rear left tire sensor low battery"
+      },
+      "rear_right_tire_sensor_low_battery": {
+        "name": "Rear right tire sensor low battery"
+      },
+      "vehicle_online": {
+        "name": "Vehicle online"
+      },
+      "vehicle_driving": {
+        "name": "Vehicle driving"
+      },
+      "handbrake_on": {
+        "name": "Handbrake"
+      },
+      "alarm_active": {
+        "name": "Alarm"
       }
     }
   }

@@ -3,18 +3,28 @@
     "step": {
       "user": {
         "title": "AITO 登录",
-        "description": "在浏览器中打开[华为登录链接]({login_url})。\n\n扫码登录并等待浏览器跳转后，复制地址栏里的回调 URL。URL 应该以 `https://xop.xcar.test.vmall.com/` 开头，并包含 `code` 和 `state`。\n\nAITO 车服务同一华为账号通常只能保持一个有效服务会话。为了稳定使用 Home Assistant，建议在 AITO App 中单独授权一个华为账号，并将该账号专用于本集成。",
+        "description": "请使用已在 AITO App 中获得车辆服务权限的华为账号。首次添加需接收并输入短信验证码。\n\n为支持后续自动续期，集成会在本地加密保存账号密码和固定设备身份。\n\n建议使用专用于 Home Assistant 的账号；在 AITO App 或其他设备登录同一账号，可能导致集成需要重新认证。",
         "data": {
-          "auth_callback": "浏览器地址栏回调 URL"
+          "phone": "华为账号手机号",
+          "password": "华为账号密码"
+        }
+      },
+      "sms": {
+        "title": "短信验证",
+        "description": "请输入华为发送到该账号手机号的短信验证码。验证码仅用于本次首次登录验证。",
+        "data": {
+          "sms_code": "短信验证码"
         }
       }
     },
     "error": {
       "cannot_connect": "无法连接 AITO 服务，请稍后重试。",
-      "invalid_auth_code": "登录回调 URL 无效，请重新复制。",
-      "no_vehicles": "登录成功，但该账号没有返回车辆。",
-      "state_mismatch": "登录状态不匹配，请重新打开登录链接。"
+      "invalid_auth": "华为账号认证失败，请检查手机号、密码和短信验证码。",
+      "no_vehicles": "登录成功，但该账号没有返回车辆。"
     }
+  },
+  "abort": {
+    "reauth_successful": "AITO 认证信息已更新。"
   },
   "options": {
     "step": {
@@ -207,12 +217,12 @@
         "name": "车速"
       },
       "gear": {
-        "name": "档位",
+        "name": "挡位",
         "state": {
-          "n": "N 档",
-          "r": "R 档",
-          "d": "D 档",
-          "p": "P 档"
+          "n": "N 挡",
+          "r": "R 挡",
+          "d": "D 挡",
+          "p": "P 挡"
         }
       },
       "power_status": {

@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import json
 import logging
-import uuid
-from contextlib import suppress
 from typing import Any
 
 import voluptuous as vol
@@ -11,23 +8,32 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 
-from .api import AitoApiClient
+try:
+    from homeassistant.helpers import selector
+except (ImportError, ModuleNotFoundError):
+    selector = None
+
+from .api import AitoApiClient, AitoApiError
 from .auth import (
-    build_huawei_login_url,
-    extract_auth_code,
+    P256KeyPair,
     extract_credentials,
-    extract_huawei_omp_auth_code,
-    extract_state,
-    generate_code_verifier,
+    extract_vehicle_authorization,
+    session_key_status,
 )
 from .const import (
     CONF_ACCESS_TOKEN,
     CONF_APIG_AUTHORIZATION,
     CONF_ASSET_KEY,
-    CONF_AUTH_CALLBACK,
     CONF_DEVICE_ID,
+    CONF_ENCRYPTED_PASSWORD,
+    CONF_ENCRYPTED_SESSION_CONTEXT,
+    CONF_IVCS_DEVICE_ID,
+    CONF_OMP_DEVICE_ID,
+    CONF_PASSWORD,
+    CONF_PHONE,
     CONF_SCAN_INTERVAL,
     CONF_REFRESH_TOKEN,
+    CONF_SMS_CODE,
     CONF_SESSION_KEY,
     CONF_SESSION_KEY_EXPIRE_IN,
     CONF_SERVICE_INFO,
@@ -36,102 +42,227 @@ from .const import (
     CONF_USER_INFO,
     CONF_VEHICLES,
     CONF_XID,
+    DEFAULT_DEVICE_MODEL,
+    DEFAULT_NATIVE_DEVICE_MODEL,
     DEFAULT_SCAN_INTERVAL_SECONDS,
     DOMAIN,
+    MIN_SCAN_INTERVAL_SECONDS,
     scan_interval_seconds,
 )
+from .huawei_auth import HuaweiAuthError, HuaweiIosAuthClient
 from .models import Vehicle, firmware_sw_version
-from .storage import AitoAssetStore, asset_key_from_login_data, temporary_asset_key
+from .storage import (
+    AitoAssetStore,
+    AitoDeviceIdentityStore,
+    asset_key_from_login_data,
+    encrypt_password,
+    encrypt_session_context,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class AitoLoginRejected(RuntimeError):
+    pass
 
 
 class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     def __init__(self) -> None:
-        self._state = uuid.uuid4().hex
-        self._device_id = uuid.uuid4().hex
-        self._code_verifier = generate_code_verifier()
+        self._identity: dict[str, Any] | None = None
+        self._identity_store: AitoDeviceIdentityStore | None = None
+        self._huawei_login_client: HuaweiIosAuthClient | None = None
+        self._phone: str | None = None
+        self._password: str | None = None
+        self._reauth_entry: Any | None = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
         errors: dict[str, str] = {}
         if user_input is not None:
-            callback_value = user_input[CONF_AUTH_CALLBACK]
-            try:
-                auth_code = extract_auth_code(callback_value)
-                state = extract_state(callback_value)
-                if state and state != self._state:
-                    errors["base"] = "state_mismatch"
+            if CONF_PHONE in user_input and CONF_PASSWORD in user_input:
+                phone = str(user_input[CONF_PHONE]).strip()
+                password = str(user_input[CONF_PASSWORD])
+                if not phone or not password.strip():
+                    errors["base"] = "invalid_auth"
+                    self._clear_transient_login_state()
                 else:
-                    temp_asset_key = temporary_asset_key(self._device_id)
-                    temp_asset_store = AitoAssetStore(self.hass, temp_asset_key)
-                    with suppress(Exception):
-                        await temp_asset_store.async_remove()
-                    await temp_asset_store.async_save({CONF_DEVICE_ID: self._device_id})
+                    self._identity_store = AitoDeviceIdentityStore(self.hass)
+                    self._identity = await self._identity_store.async_get_or_create(phone)
+                    self._phone = phone
+                    self._password = password
                     try:
-                        data = await self.hass.async_add_executor_job(self._login, auth_code)
-                        if not _has_stored_vehicles(data):
-                            _LOGGER.warning("AITO login did not return any vehicles")
-                            errors["base"] = "no_vehicles"
-                        else:
-                            await self.async_set_unique_id(str(data.get(CONF_XID) or data[CONF_DEVICE_ID]))
-                            self._abort_if_unique_id_configured()
-                            asset_key = asset_key_from_login_data(data)
-                            await self._save_and_verify_assets(asset_key, data)
-                            return self.async_create_entry(
-                                title="AITO",
-                                data={CONF_ASSET_KEY: asset_key, CONF_DEVICE_ID: data[CONF_DEVICE_ID]},
-                                options={CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL_SECONDS},
-                            )
-                    finally:
-                        with suppress(Exception):
-                            await temp_asset_store.async_remove()
-            except ValueError:
-                errors["base"] = "invalid_auth_code"
-            except Exception:
-                _LOGGER.exception("AITO login failed")
-                errors["base"] = "cannot_connect"
+                        await self.hass.async_add_executor_job(self._request_sms)
+                        return self.async_show_form(
+                            step_id="sms",
+                            data_schema=vol.Schema({vol.Required(CONF_SMS_CODE): str}),
+                            errors={},
+                        )
+                    except HuaweiAuthError as error:
+                        _LOGGER.warning("AITO Huawei SMS request was rejected: %s", error)
+                        errors["base"] = "invalid_auth"
+                        self._clear_transient_login_state()
+                    except Exception:
+                        _LOGGER.exception("AITO SMS request failed")
+                        errors["base"] = "cannot_connect"
+                        self._clear_transient_login_state()
+            else:
+                errors["base"] = "invalid_auth"
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Required(CONF_AUTH_CALLBACK): str}),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_PHONE): str,
+                    vol.Required(CONF_PASSWORD): _password_selector(),
+                }
+            ),
             errors=errors,
-            description_placeholders={
-                "login_url": build_huawei_login_url(
-                    self._state,
-                    code_verifier=self._code_verifier,
-                    device_id=self._device_id,
-                )
-            },
+            description_placeholders={},
         )
 
-    def _login(self, huawei_code: str) -> dict[str, Any]:
-        client = AitoApiClient(apig_verify_ssl=False)
-        huawei_response = client.exchange_huawei_authorization_code(
-            huawei_code,
-            code_verifier=self._code_verifier,
-            device_id=self._device_id,
+    async def async_step_reauth(self, entry_data: dict[str, Any]):
+        entry_id = getattr(self, "context", {}).get("entry_id")
+        config_entries_manager = getattr(self.hass, "config_entries", None)
+        get_entry = getattr(config_entries_manager, "async_get_entry", None)
+        self._reauth_entry = get_entry(entry_id) if entry_id and get_entry else None
+        return await self.async_step_user()
+
+    async def async_step_sms(self, user_input: dict[str, Any] | None = None):
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            sms_code = str(user_input.get(CONF_SMS_CODE, "")).strip()
+            if not sms_code:
+                return self.async_show_form(
+                    step_id="sms",
+                    data_schema=vol.Schema({vol.Required(CONF_SMS_CODE): str}),
+                    errors={"base": "invalid_auth"},
+                )
+            try:
+                data = await self.hass.async_add_executor_job(self._login_with_sms_code, sms_code)
+                if not _has_stored_vehicles(data):
+                    _LOGGER.warning("AITO login did not return any vehicles")
+                    errors["base"] = "no_vehicles"
+                else:
+                    asset_key = asset_key_from_login_data(data)
+                    return await self._finish_login(asset_key, data)
+            except HuaweiAuthError as error:
+                _LOGGER.warning("AITO Huawei SMS login was rejected: %s", error)
+                errors["base"] = "invalid_auth"
+            except AitoLoginRejected as error:
+                _LOGGER.warning("AITO login was rejected: %s", error)
+                errors["base"] = "invalid_auth"
+            except AitoApiError as error:
+                if error.status in {401, 403}:
+                    _LOGGER.warning("AITO login was rejected by upstream auth: %s", error)
+                    errors["base"] = "invalid_auth"
+                else:
+                    _LOGGER.exception("AITO SMS login failed")
+                    errors["base"] = "cannot_connect"
+            except Exception:
+                _LOGGER.exception("AITO SMS login failed")
+                errors["base"] = "cannot_connect"
+            finally:
+                if self._identity_store is not None and self._identity is not None:
+                    await self._identity_store.async_save(self._identity)
+                self._clear_transient_login_state()
+
+            if errors:
+                return self.async_show_form(
+                    step_id="user",
+                    data_schema=vol.Schema(
+                        {
+                            vol.Required(CONF_PHONE): str,
+                            vol.Required(CONF_PASSWORD): _password_selector(),
+                        }
+                    ),
+                    errors=errors,
+                    description_placeholders={},
+                )
+
+        return self.async_show_form(
+            step_id="sms",
+            data_schema=vol.Schema({vol.Required(CONF_SMS_CODE): str}),
+            errors=errors,
         )
-        auth_code = extract_huawei_omp_auth_code(huawei_response)
-        if not auth_code:
-            raise ValueError("Huawei token response did not return auth code")
-        auth_response = client.user_auth(auth_code, device_id=self._device_id)
+
+    def _request_sms(self) -> None:
+        if not self._identity or not self._phone:
+            raise RuntimeError("missing Huawei login state")
+        self._huawei_login_client = self._huawei_client(self._identity)
+        self._huawei_login_client.request_sms(self._phone)
+
+    def _clear_transient_login_state(self) -> None:
+        self._identity = None
+        self._identity_store = None
+        self._phone = None
+        self._password = None
+        self._huawei_login_client = None
+
+    def _login_with_sms_code(self, sms_code: str) -> dict[str, Any]:
+        if not self._identity or not self._phone or self._password is None:
+            raise RuntimeError("missing Huawei login state")
+        identity = dict(self._identity)
+        huawei_client = self._huawei_login_client or self._huawei_client(identity)
+        login = huawei_client.login_with_sms_password(self._phone, sms_code, self._password)
+        return self._complete_ios_login(identity, huawei_client, login)
+
+    def _huawei_client(self, identity: dict[str, Any]) -> HuaweiIosAuthClient:
+        return HuaweiIosAuthClient(
+            device_id=str(identity[CONF_DEVICE_ID]),
+            device_model=str(identity.get("device_model") or DEFAULT_DEVICE_MODEL),
+            native_device_model=str(identity.get("native_device_model") or DEFAULT_NATIVE_DEVICE_MODEL),
+        )
+
+    def _complete_ios_login(
+        self,
+        identity: dict[str, Any],
+        huawei_client: HuaweiIosAuthClient,
+        login: dict[str, str],
+    ) -> dict[str, Any]:
+        service_token = login.get("TGC")
+        if not service_token:
+            raise ValueError("Huawei login did not return TGC")
+        st_auth = huawei_client.st_auth(service_token)
+        user_id = login.get("userID") or (st_auth.get("userID") if isinstance(st_auth, dict) else None)
+        if not user_id:
+            raise ValueError("Huawei login/stAuth did not return userID")
+        known_user_id = identity.get("huawei_user_id")
+        if known_user_id and str(known_user_id) != str(user_id):
+            raise AitoLoginRejected("Huawei account does not match its saved device identity")
+        identity["huawei_user_id"] = str(user_id)
+        key_pair = P256KeyPair.from_storage(identity) or P256KeyPair.generate()
+        huawei_client.set_asym_public_key(user_id, service_token, key_pair)
+        identity.update(key_pair.as_storage())
+        self._identity = identity
+        auth_code = huawei_client.silent_token(service_token)
+
+        omp_device_id = str(identity[CONF_OMP_DEVICE_ID])
+        client = AitoApiClient(
+            ivcs_device_id=str(identity[CONF_IVCS_DEVICE_ID]),
+            apig_verify_ssl=False,
+        )
+        auth_response = client.user_auth(
+            auth_code,
+            device_id=omp_device_id,
+            device_model=str(identity.get("device_model") or DEFAULT_DEVICE_MODEL),
+            native_device_model=str(identity.get("native_device_model") or DEFAULT_NATIVE_DEVICE_MODEL),
+        )
+        auth_response = _ensure_trusted_omp_session(client, auth_code, identity, auth_response)
         credentials = extract_credentials(auth_response)
         xid = credentials.get(CONF_XID)
         if not xid:
-            raise RuntimeError(
-                "user auth did not return xid: "
-                f"credentials={sorted(credentials.keys())}, "
-                f"response={_safe_response_summary(auth_response)}"
-            )
+            raise AitoLoginRejected("user auth did not return xid")
         user_info = credentials.get(CONF_USER_INFO)
-        user_id = user_info.get("userId") if isinstance(user_info, dict) else None
-        apig_authorization = self._refresh_vehicle_authorization(
-            client,
-            xid,
-            str(user_id) if user_id else None,
+        omp_user_id = user_info.get("userId") if isinstance(user_info, dict) else user_id
+        vehicle_response = client.vehicle_auth(
+            xid=str(xid),
+            device_id=omp_device_id,
+            device_model=str(identity.get("device_model") or DEFAULT_DEVICE_MODEL),
+            native_device_model=str(identity.get("native_device_model") or DEFAULT_NATIVE_DEVICE_MODEL),
+            user_id=str(omp_user_id) if omp_user_id else None,
         )
+        apig_authorization = extract_vehicle_authorization(vehicle_response)
         if not apig_authorization:
             raise ValueError("vehicle authorization not returned")
 
@@ -147,8 +278,25 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 continue
             self._attach_current_version(client, stored_vehicle)
             stored_vehicles.append(stored_vehicle)
+
+        credential_key = identity.get("credential_key")
+        if not isinstance(credential_key, str) or not credential_key:
+            raise ValueError("device identity did not include credential key")
         return {
-            CONF_DEVICE_ID: self._device_id,
+            CONF_DEVICE_ID: str(identity[CONF_DEVICE_ID]),
+            CONF_OMP_DEVICE_ID: omp_device_id,
+            CONF_IVCS_DEVICE_ID: str(identity[CONF_IVCS_DEVICE_ID]),
+            CONF_PHONE: self._phone,
+            CONF_ENCRYPTED_PASSWORD: encrypt_password(self._password or "", credential_key),
+            CONF_ENCRYPTED_SESSION_CONTEXT: encrypt_session_context(
+                {
+                    "tgc": service_token,
+                    "jsessionid": huawei_client.jsessionid,
+                    "huawei_cookies": huawei_client.cookies,
+                    "omp_cookies": client.omp_cookies,
+                },
+                credential_key,
+            ),
             CONF_ACCESS_TOKEN: credentials.get(CONF_ACCESS_TOKEN),
             CONF_REFRESH_TOKEN: credentials.get(CONF_REFRESH_TOKEN),
             CONF_XID: credentials.get(CONF_XID),
@@ -159,24 +307,9 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_SERVICE_USER_INFO: credentials.get(CONF_SERVICE_USER_INFO),
             CONF_SERVICE_LOGIN_STATUS: credentials.get(CONF_SERVICE_LOGIN_STATUS),
             CONF_APIG_AUTHORIZATION: apig_authorization,
+            "vehicle_tokens": vehicle_response.get("vehicleTokenInfoList") if isinstance(vehicle_response, dict) else [],
             CONF_VEHICLES: stored_vehicles,
         }
-
-    def _refresh_vehicle_authorization(self, client: AitoApiClient, xid: str, user_id: str | None) -> str | None:
-        try:
-            response = client.vehicle_refresh(
-                xid=xid,
-                device_id=self._device_id,
-                user_id=user_id,
-                require_account_id=True,
-                aito_service=False,
-            )
-        except Exception:
-            _LOGGER.debug("AITO vehicle authorization refresh during login failed", exc_info=True)
-            return None
-        if isinstance(response, dict) and response.get("accessToken"):
-            return str(response["accessToken"])
-        return None
 
     def _attach_current_version(self, client: AitoApiClient, stored_vehicle: dict[str, Any]) -> None:
         try:
@@ -194,6 +327,35 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         saved = await asset_store.async_load()
         if not saved or not _has_stored_vehicles(saved) or not saved.get(CONF_APIG_AUTHORIZATION):
             raise RuntimeError("AITO credential asset save verification failed")
+
+    async def _finish_login(self, asset_key: str, data: dict[str, Any]):
+        entry_data = {CONF_ASSET_KEY: asset_key, CONF_DEVICE_ID: data[CONF_DEVICE_ID]}
+        if self._reauth_entry is None:
+            await self.async_set_unique_id(asset_key)
+            self._abort_if_unique_id_configured()
+        await self._save_and_verify_assets(asset_key, data)
+        if self._reauth_entry is not None:
+            old_asset_key = (
+                self._reauth_entry.data.get(CONF_ASSET_KEY)
+                if isinstance(self._reauth_entry.data, dict)
+                else None
+            )
+            if old_asset_key and old_asset_key != asset_key:
+                try:
+                    await AitoAssetStore(self.hass, str(old_asset_key)).async_remove()
+                except Exception:
+                    _LOGGER.debug("AITO old credential asset cleanup failed during reauth", exc_info=True)
+            return self.async_update_reload_and_abort(
+                self._reauth_entry,
+                data_updates=entry_data,
+                reason="reauth_successful",
+            )
+
+        return self.async_create_entry(
+            title="AITO",
+            data=entry_data,
+            options={CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL_SECONDS},
+        )
 
     @staticmethod
     @callback
@@ -213,30 +375,57 @@ class AitoOptionsFlow(config_entries.OptionsFlow):
                     vol.Required(
                         CONF_SCAN_INTERVAL,
                         default=scan_interval_seconds(self.config_entry.options),
-                    ): vol.All(vol.Coerce(int), vol.Range(min=10)),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL_SECONDS)),
                 }
             ),
         )
 
 
-def _safe_response_summary(response: Any) -> str:
-    if not isinstance(response, dict):
-        return type(response).__name__
-    safe_fields = (
-        "code",
-        "resultCode",
-        "errorCode",
-        "returnCode",
-        "msg",
-        "message",
-        "error",
-        "error_description",
-    )
-    summary = {key: response[key] for key in safe_fields if key in response}
-    summary["keys"] = sorted(str(key) for key in response.keys())
-    return json.dumps(summary, ensure_ascii=False)
+def _ensure_trusted_omp_session(
+    client: AitoApiClient,
+    auth_code: str,
+    identity: dict[str, Any],
+    response: Any,
+) -> Any:
+    if session_key_status(response) != "1":
+        return response
+
+    credentials = extract_credentials(response)
+    user_info = credentials.get(CONF_USER_INFO)
+    user_id = user_info.get("userId") if isinstance(user_info, dict) else None
+    xid = credentials.get(CONF_XID)
+    if not user_id or not xid:
+        _LOGGER.warning("AITO OMP session is untrusted and cannot be verified during login")
+        return response
+
+    try:
+        client.force_login(
+            xid=str(xid),
+            device_id=str(identity[CONF_OMP_DEVICE_ID]),
+            device_model=str(identity.get("device_model") or DEFAULT_DEVICE_MODEL),
+            native_device_model=str(identity.get("native_device_model") or DEFAULT_NATIVE_DEVICE_MODEL),
+            user_id=str(user_id),
+        )
+        refreshed = client.user_auth(
+            auth_code,
+            device_id=str(identity[CONF_OMP_DEVICE_ID]),
+            device_model=str(identity.get("device_model") or DEFAULT_DEVICE_MODEL),
+            native_device_model=str(identity.get("native_device_model") or DEFAULT_NATIVE_DEVICE_MODEL),
+        )
+    except AitoApiError:
+        _LOGGER.warning("AITO OMP device verification did not complete during login")
+        return response
+    if session_key_status(refreshed) == "1":
+        _LOGGER.warning("AITO OMP session remains untrusted after device verification")
+    return refreshed
 
 
 def _has_stored_vehicles(data: dict[str, Any]) -> bool:
     vehicles = data.get(CONF_VEHICLES)
     return isinstance(vehicles, list) and any(isinstance(vehicle, dict) and vehicle.get("vehicleIdStr") for vehicle in vehicles)
+
+
+def _password_selector() -> Any:
+    if selector is None:
+        return str
+    return selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD))

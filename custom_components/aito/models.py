@@ -46,6 +46,8 @@ def vehicle_device_info(vehicle: Vehicle) -> dict[str, Any]:
         "name": vehicle.name,
         "manufacturer": "赛力斯",
     }
+    if vehicle.model:
+        info["model"] = vehicle.model
     if vehicle.sw_version:
         info["sw_version"] = vehicle.sw_version
     return info

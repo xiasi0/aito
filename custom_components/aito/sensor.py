@@ -9,7 +9,7 @@ try:
 except ImportError:
     SensorStateClass = None
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfLength
+from homeassistant.const import PERCENTAGE, UnitOfLength, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -27,6 +27,7 @@ class AitoSensorDescription(SensorEntityDescription):
 UNIT_MAP = {
     "%": PERCENTAGE,
     "km": UnitOfLength.KILOMETERS,
+    "\u00b0C": UnitOfTemperature.CELSIUS,
 }
 
 DEVICE_CLASS_MAP = {

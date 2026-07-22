@@ -30,12 +30,14 @@ class AitoDeviceTracker(CoordinatorEntity[AitoDataCoordinator], TrackerEntity):
     @property
     def latitude(self) -> float | None:
         location = self._location()
-        return location["latitude"] if "latitude" in location else location.get("lat")
+        value = location["latitude"] if "latitude" in location else location.get("lat")
+        return _coordinate(value, minimum=-90, maximum=90)
 
     @property
     def longitude(self) -> float | None:
         location = self._location()
-        return location["longitude"] if "longitude" in location else location.get("lon")
+        value = location["longitude"] if "longitude" in location else location.get("lon")
+        return _coordinate(value, minimum=-180, maximum=180)
 
     @property
     def source_type(self) -> SourceType:
@@ -43,5 +45,19 @@ class AitoDeviceTracker(CoordinatorEntity[AitoDataCoordinator], TrackerEntity):
 
     def _location(self) -> dict:
         location = self.coordinator.data.get(self.vehicle.id, {}).get("location") or {}
+        if not isinstance(location, dict):
+            return {}
         nested = location.get("location") if isinstance(location, dict) else None
         return nested if isinstance(nested, dict) else location
+
+
+def _coordinate(value, *, minimum: float, maximum: float) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        coordinate = float(value)
+    except (TypeError, ValueError):
+        return None
+    if coordinate < minimum or coordinate > maximum:
+        return None
+    return coordinate

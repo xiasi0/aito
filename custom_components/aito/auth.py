@@ -1,106 +1,80 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import secrets
-import uuid
+from dataclasses import dataclass
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse
 
-from .const import (
-    AITO_CLIENT_ID,
-    DEFAULT_HUAWEI_C_VERSION,
-    DEFAULT_HUAWEI_AUTHORIZE_URL,
-    DEFAULT_HUAWEI_SCOPES,
-    HUAWEI_REDIRECT_URI,
-)
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
 
-def generate_code_verifier() -> str:
-    return secrets.token_urlsafe(48)
+def b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
 
 
-def pkce_code_challenge(code_verifier: str) -> str:
-    digest = hashlib.sha256(code_verifier.encode("ISO_8859_1")).digest()
-    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+@dataclass(frozen=True)
+class P256KeyPair:
+    private_pem: bytes
+    public_key_b64: str
+    key_id: str
 
+    @classmethod
+    def generate(cls) -> "P256KeyPair":
+        private_key = ec.generate_private_key(ec.SECP256R1())
+        private_pem = private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+        public_der = private_key.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        return cls(
+            private_pem=private_pem,
+            public_key_b64=base64.b64encode(public_der).decode("ascii"),
+            key_id=secrets.token_hex(16),
+        )
 
-def build_huawei_login_url(
-    state: str | None = None,
-    *,
-    code_verifier: str,
-    device_id: str,
-) -> str:
-    resolved_state = state or uuid.uuid4().hex
-    params = {
-        "access_type": "offline",
-        "response_type": "code",
-        "client_id": AITO_CLIENT_ID,
-        "ui_locales": "zh-cn",
-        "redirect_uri": HUAWEI_REDIRECT_URI,
-        "scope": "openid " + " ".join(DEFAULT_HUAWEI_SCOPES),
-        "display": "touch",
-        "nonce": resolved_state,
-        "include_granted_scopes": "true",
-        "uuid": device_id,
-        "reqClientType": "7",
-        "loginChannel": "7000000",
-        "cVersion": DEFAULT_HUAWEI_C_VERSION,
-        "code_challenge": pkce_code_challenge(code_verifier),
-        "code_challenge_method": "S256",
-        "terminal-type": "unknown",
-        "state": resolved_state,
-    }
-    return f"{DEFAULT_HUAWEI_AUTHORIZE_URL}?{urlencode(params)}"
+    @classmethod
+    def from_storage(cls, data: dict[str, Any]) -> "P256KeyPair | None":
+        try:
+            key_id = data.get("p256_key_id")
+            public_key = data.get("p256_public_key")
+            private_key = data.get("p256_private_key_pem")
+            if not all(isinstance(value, str) and value for value in (key_id, public_key, private_key)):
+                return None
+            private_pem = base64.b64decode(private_key)
+            loaded_private_key = serialization.load_pem_private_key(private_pem, password=None)
+            derived_public_der = loaded_private_key.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            if base64.b64encode(derived_public_der).decode("ascii") != public_key:
+                return None
+            return cls(
+                private_pem=private_pem,
+                public_key_b64=public_key,
+                key_id=key_id,
+            )
+        except Exception:
+            return None
 
+    def as_storage(self) -> dict[str, str]:
+        return {
+            "p256_key_id": self.key_id,
+            "p256_public_key": self.public_key_b64,
+            "p256_private_key_pem": base64.b64encode(self.private_pem).decode("ascii"),
+        }
 
-def extract_auth_code(value: str) -> str:
-    text = value.strip()
-    if not text:
-        raise ValueError("callback does not contain code")
-    parsed = urlparse(text)
-    if not parsed.scheme:
-        return text
-
-    for raw_params in (parsed.query, parsed.fragment):
-        params = parse_qs(raw_params)
-        for key in ("code", "authCode"):
-            values = params.get(key)
-            if values and values[0]:
-                return values[0]
-    raise ValueError("callback does not contain code")
-
-
-def extract_huawei_omp_auth_code(response: Any) -> str | None:
-    if isinstance(response, dict):
-        for key in ("serverAuthCode", "authorizationCode", "authCode", "code"):
-            value = response.get(key)
-            if isinstance(value, str) and value:
-                if "://" in value:
-                    try:
-                        return extract_auth_code(value)
-                    except ValueError:
-                        pass
-                return value
-        for value in response.values():
-            found = extract_huawei_omp_auth_code(value)
-            if found:
-                return found
-    if isinstance(response, list):
-        for value in response:
-            found = extract_huawei_omp_auth_code(value)
-            if found:
-                return found
-    return None
-
-
-def extract_state(value: str) -> str | None:
-    parsed = urlparse(value.strip())
-    for raw_params in (parsed.query, parsed.fragment):
-        values = parse_qs(raw_params).get("state")
-        if values and values[0]:
-            return values[0]
-    return None
+    def sign_jwt_input(self, signing_input: str) -> str:
+        private_key = serialization.load_pem_private_key(self.private_pem, password=None)
+        der_signature = private_key.sign(signing_input.encode("utf-8"), ec.ECDSA(hashes.SHA256()))
+        r_value, s_value = decode_dss_signature(der_signature)
+        signature = r_value.to_bytes(32, "big") + s_value.to_bytes(32, "big")
+        return b64url(signature)
 
 
 def extract_credentials(response: Any) -> dict[str, Any]:
@@ -110,7 +84,7 @@ def extract_credentials(response: Any) -> dict[str, Any]:
     result = {
         "access_token": token_source.get("accessToken"),
         "refresh_token": token_source.get("refreshToken"),
-        "xid": token_source.get("xid") or response.get("sessionKey"),
+        "xid": response.get("sessionKey") or token_source.get("xid"),
         "session_key": response.get("sessionKey"),
         "session_key_expire_in": response.get("sessionKeyExpireIn"),
         "user_info": response.get("userInfo"),
@@ -120,7 +94,7 @@ def extract_credentials(response: Any) -> dict[str, Any]:
     }
     found = {key: value for key, value in result.items() if value is not None}
     if found.get("access_token") and found.get("refresh_token") and found.get("xid"):
-        return found
+        return _prefer_session_key(found, response)
 
     best = found
     for value in response.values():
@@ -128,21 +102,51 @@ def extract_credentials(response: Any) -> dict[str, Any]:
         if nested:
             merged = {**found, **nested}
             if merged.get("access_token") and merged.get("refresh_token") and merged.get("xid"):
-                return merged
+                return _prefer_session_key(merged, response)
             if len(merged) > len(best):
                 best = merged
-    return best
+    return _prefer_session_key(best, response)
 
 
-def is_user_session_kicked(response: Any) -> bool:
+def session_key_status(response: Any) -> str | None:
     if isinstance(response, dict):
         user_info = response.get("userInfo")
-        if isinstance(user_info, dict) and str(user_info.get("sessionKeyStatus")) == "1":
-            return True
-        return any(is_user_session_kicked(value) for value in response.values())
+        if isinstance(user_info, dict) and user_info.get("sessionKeyStatus") is not None:
+            return str(user_info["sessionKeyStatus"])
+        for value in response.values():
+            status = session_key_status(value)
+            if status is not None:
+                return status
     if isinstance(response, list):
-        return any(is_user_session_kicked(value) for value in response)
-    return False
+        for value in response:
+            status = session_key_status(value)
+            if status is not None:
+                return status
+    return None
+
+
+def _prefer_session_key(credentials: dict[str, Any], response: Any) -> dict[str, Any]:
+    session_key = _find_session_key(response)
+    if not session_key:
+        return credentials
+    return {**credentials, "xid": session_key, "session_key": session_key}
+
+
+def _find_session_key(value: Any) -> str | None:
+    if isinstance(value, dict):
+        session_key = value.get("sessionKey")
+        if isinstance(session_key, str) and session_key:
+            return session_key
+        for nested in value.values():
+            found = _find_session_key(nested)
+            if found:
+                return found
+    if isinstance(value, list):
+        for nested in value:
+            found = _find_session_key(nested)
+            if found:
+                return found
+    return None
 
 
 def extract_vehicle_authorization(response: Any, enterprise_code: str = "SERES") -> str | None:

@@ -1,29 +1,23 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
+import secrets
 import ssl
 import uuid
-from typing import Any, Callable
-from urllib.parse import urlencode
+from typing import Any, Callable, Mapping
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .const import (
-    AITO_SERVICE_HEADER_NAME,
-    AITO_SERVICE_HEADER_VALUE,
-    AITO_CLIENT_ID,
     APIG_BASE_URL,
     DEFAULT_APIG_CLIENT_VERSION,
     DEFAULT_DEVICE_MODEL,
-    DEFAULT_HUAWEI_C_VERSION,
-    DEFAULT_HUAWEI_HMS_VERSION,
-    DEFAULT_HUAWEI_SDK_VERSION,
-    DEFAULT_HUAWEI_TOKEN_URL,
+    DEFAULT_NATIVE_DEVICE_MODEL,
     DEFAULT_OMP_CLIENT_TYPE,
     DEFAULT_PACKAGE_NAME,
     DEFAULT_USER_AGENT,
     DEFAULT_VEHICLE_EC,
-    HUAWEI_REDIRECT_URI,
     OMP_BASE_URL,
 )
 
@@ -51,13 +45,14 @@ DEFAULT_DYNAMIC_INFO_SECTIONS: JSON = {
 
 class AitoApiError(RuntimeError):
     def __init__(self, status: int, response: Any) -> None:
+        safe_response = _safe_error_response(response)
         message = f"AITO request failed with HTTP {status}"
-        response_summary = _safe_response_summary(response)
+        response_summary = _safe_response_summary(safe_response)
         if response_summary:
             message = f"{message}: {response_summary}"
         super().__init__(message)
         self.status = status
-        self.response = response
+        self.response = safe_response
 
 
 class AitoApiClient:
@@ -68,6 +63,9 @@ class AitoApiClient:
         apig_base_url: str = APIG_BASE_URL,
         apig_authorization: str | None = None,
         apig_client_version: str = DEFAULT_APIG_CLIENT_VERSION,
+        device_id: str | None = None,
+        ivcs_device_id: str | None = None,
+        omp_cookies: Mapping[str, str] | None = None,
         timeout: float = 20.0,
         transport: Transport | None = None,
         apig_verify_ssl: bool = True,
@@ -76,9 +74,16 @@ class AitoApiClient:
         self.apig_base_url = apig_base_url.rstrip("/")
         self.apig_authorization = apig_authorization
         self.apig_client_version = apig_client_version
+        self.device_id = ivcs_device_id or device_id
         self.timeout = timeout
         self.transport = transport or _urllib_transport
         self.apig_transport = transport or (_urllib_transport if apig_verify_ssl else _urllib_insecure_transport)
+        self._cookies = {
+            str(name): str(value)
+            for name, value in (omp_cookies or {}).items()
+            if isinstance(name, str) and isinstance(value, str) and name and value
+        }
+        self._omp_warm_attempted = False
 
     def user_auth(
         self,
@@ -86,8 +91,8 @@ class AitoApiClient:
         *,
         device_id: str,
         device_model: str = DEFAULT_DEVICE_MODEL,
+        native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL,
         client_type: str = DEFAULT_OMP_CLIENT_TYPE,
-        aito_service: bool = False,
     ) -> Any:
         payload: JSON = {
             "authCode": auth_code,
@@ -97,44 +102,7 @@ class AitoApiClient:
         return self._post_omp(
             "/xcar/omp/xbs/account/user/auth",
             payload,
-            extra_headers=_aito_service_header(aito_service),
-        )
-
-    def exchange_huawei_authorization_code(
-        self,
-        code: str,
-        *,
-        code_verifier: str,
-        device_id: str,
-    ) -> Any:
-        url = f"{DEFAULT_HUAWEI_TOKEN_URL}?{urlencode({
-            'client_id': AITO_CLIENT_ID,
-            'cVersion': DEFAULT_HUAWEI_C_VERSION,
-            'hms_version': DEFAULT_HUAWEI_HMS_VERSION,
-            'sdkVersion': DEFAULT_HUAWEI_SDK_VERSION,
-        })}"
-        body = urlencode(
-            {
-                "client_id": AITO_CLIENT_ID,
-                "grant_type": "authorization_code",
-                "redirect_uri": HUAWEI_REDIRECT_URI,
-                "need_code": "true",
-                "need_open_uid": "true",
-                "supportAlg": "RS256",
-                "code": code,
-                "code_type": "1",
-                "uuid": device_id,
-                "device_id": device_id,
-                "device_type": "6",
-                "package_name": DEFAULT_PACKAGE_NAME,
-                "code_verifier": code_verifier,
-            }
-        ).encode("utf-8")
-        return self._request(
-            "POST",
-            url,
-            {"Content-Type": "application/x-www-form-urlencoded"},
-            body,
+            extra_headers=_omp_session_headers(native_device_model),
         )
 
     def refresh_user_token(
@@ -144,9 +112,10 @@ class AitoApiClient:
         *,
         device_id: str,
         device_model: str = DEFAULT_DEVICE_MODEL,
+        native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL,
         client_type: str = DEFAULT_OMP_CLIENT_TYPE,
         xid: str | None = None,
-        ec: str = DEFAULT_VEHICLE_EC,
+        ec: str = "",
         user_id: str | None = None,
     ) -> Any:
         payload: JSON = {
@@ -155,11 +124,7 @@ class AitoApiClient:
             "at": access_token,
             "rt": refresh_token,
         }
-        headers = {"EC": ec, "deviceModel": device_model}
-        if xid:
-            headers["xid"] = xid
-        if user_id:
-            headers["uid"] = user_id
+        headers = _omp_session_headers(native_device_model, xid=xid, user_id=user_id, ec=ec)
         return self._post_omp(
             "/xcar/omp/xbs/account/user/refresh",
             payload,
@@ -172,14 +137,13 @@ class AitoApiClient:
         xid: str,
         device_id: str,
         device_model: str = DEFAULT_DEVICE_MODEL,
-        ec: str = DEFAULT_VEHICLE_EC,
+        native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL,
+        ec: str = "",
         user_id: str | None = None,
     ) -> Any:
-        """Legacy probe endpoint; the HA runtime flow uses vehicle_refresh."""
+        """Establish a vehicle session after a fresh OMP user authentication."""
         payload = {"deviceInfo": {"type": "1", "id": device_id, "model": device_model}}
-        headers = {"xid": xid, "EC": ec, "deviceModel": device_model}
-        if user_id:
-            headers["uid"] = user_id
+        headers = _omp_session_headers(native_device_model, xid=xid, user_id=user_id, ec=ec)
         return self._post_omp(
             "/xcar/omp/xbs/account/vehicle/auth",
             payload,
@@ -192,25 +156,36 @@ class AitoApiClient:
         xid: str,
         device_id: str,
         device_model: str = DEFAULT_DEVICE_MODEL,
+        native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL,
         ec: str = DEFAULT_VEHICLE_EC,
         user_id: str | None = None,
-        require_account_id: bool = False,
-        aito_service: bool = True,
     ) -> Any:
         payload: JSON = {
-            "tokenType": 1,
+            "tokenType": 0,
+            "requireAccountId": False,
             "deviceInfo": {"type": "1", "id": device_id, "model": device_model},
         }
-        if require_account_id:
-            payload["requireAccountId"] = True
-        headers = {"xid": xid, "EC": ec, "deviceModel": device_model}
-        if user_id:
-            headers["uid"] = user_id
-        headers.update(_aito_service_header(aito_service))
+        headers = _omp_session_headers(native_device_model, xid=xid, user_id=user_id, ec=ec)
         return self._post_omp(
             "/xcar/omp/xbs/account/vehicle/refresh",
             payload,
             extra_headers=headers,
+        )
+
+    def force_login(
+        self,
+        *,
+        xid: str,
+        device_id: str,
+        device_model: str = DEFAULT_DEVICE_MODEL,
+        native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL,
+        user_id: str,
+        ec: str = "",
+    ) -> Any:
+        return self._post_omp(
+            "/xcar/omp/xbs/account/user/kickout",
+            {"deviceInfo": {"type": "1", "id": device_id, "model": device_model}},
+            extra_headers=_omp_session_headers(native_device_model, xid=xid, user_id=user_id, ec=ec),
         )
 
     def apig_vehicles(self) -> Any:
@@ -231,13 +206,36 @@ class AitoApiClient:
         return self._request_apig("GET", "/vota/v1/firmware/current-version", vehicle_id=vehicle_id)
 
     def _post_omp(self, path: str, payload: JSON, *, extra_headers: dict[str, str] | None = None) -> Any:
+        if not self._omp_warm_attempted:
+            self._warm_omp_session()
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         return self._request(
             "POST",
             f"{self.omp_base_url}/{path.lstrip('/')}",
             _omp_headers(extra_headers),
             body,
+            use_cookies=True,
         )
+
+    def _warm_omp_session(self) -> None:
+        try:
+            body = json.dumps({"pageType": 0}, ensure_ascii=False).encode("utf-8")
+            self._request(
+                "POST",
+                f"{self.omp_base_url}/xcar/omp/xbs/page/queryCustomizedPage",
+                {
+                    "Accept": "*/*",
+                    "Accept-Language": "zh-cn",
+                    "Content-Type": "application/json",
+                    "User-Agent": DEFAULT_USER_AGENT,
+                },
+                body,
+                use_cookies=True,
+            )
+        except Exception:
+            pass
+        else:
+            self._omp_warm_attempted = True
 
     def _request_apig(
         self,
@@ -253,7 +251,7 @@ class AitoApiClient:
         return self._request(
             method,
             f"{self.apig_base_url}/{path.lstrip('/')}",
-            _apig_headers(self.apig_authorization, self.apig_client_version, vehicle_id),
+            _apig_headers(self.apig_authorization, self.apig_client_version, self.device_id, vehicle_id),
             body,
             transport=self.apig_transport,
         )
@@ -266,44 +264,85 @@ class AitoApiClient:
         body: bytes | None,
         *,
         transport: Transport | None = None,
+        use_cookies: bool = False,
     ) -> Any:
         selected_transport = transport or self.transport
-        status, _response_headers, response_body = selected_transport(method, url, headers, body, self.timeout)
+        request_headers = dict(headers)
+        if use_cookies and self._cookies:
+            request_headers["Cookie"] = "; ".join(f"{key}={value}" for key, value in self._cookies.items())
+        status, response_headers, response_body = selected_transport(method, url, request_headers, body, self.timeout)
+        if use_cookies:
+            self._capture_cookies(response_headers)
         response = _decode_response(response_body)
         if status >= 400:
             raise AitoApiError(status, response)
         return response
 
+    def _capture_cookies(self, headers: dict[str, str]) -> None:
+        for key, value in headers.items():
+            if key.lower() != "set-cookie":
+                continue
+            for item in value.splitlines():
+                cookie, _, _attributes = item.partition(";")
+                name, _, cookie_value = cookie.strip().partition("=")
+                if name and cookie_value:
+                    self._cookies[name] = cookie_value
+
+    @property
+    def omp_cookies(self) -> dict[str, str]:
+        return dict(self._cookies)
+
 
 def _omp_headers(extra_headers: dict[str, str] | None = None) -> dict[str, str]:
     headers = {
         "Content-Type": "application/json",
-        "Accept": "application/json",
+        "Accept": "*/*",
+        "Accept-Language": "zh-cn",
         "User-Agent": DEFAULT_USER_AGENT,
         "pkgName": DEFAULT_PACKAGE_NAME,
-        "traceID": uuid.uuid4().hex,
+        "traceID": secrets.token_hex(8).upper(),
     }
     if extra_headers:
         headers.update({key: value for key, value in extra_headers.items() if value is not None})
     return headers
 
 
-def _apig_headers(authorization: str, client_version: str, vehicle_id: str | None) -> dict[str, str]:
-    headers = {
-        "authorization": authorization,
-        "x-client-version": client_version,
-        "x-nonce": str(uuid.uuid4()),
-        "User-Agent": "libcurl-agent/1.0",
-        "Content-Type": "application/json; charset=utf-8",
+def _omp_session_headers(
+    native_device_model: str,
+    *,
+    xid: str | None = None,
+    user_id: str | None = None,
+    ec: str | None = None,
+) -> dict[str, str]:
+    return {
+        "deviceModel": native_device_model,
+        "uid": user_id or "",
+        "xid": xid or "",
+        "EC": ec or "",
     }
+
+
+def _apig_headers(authorization: str, client_version: str, device_id: str | None, vehicle_id: str | None) -> dict[str, str]:
+    created = datetime.now().astimezone().strftime("%Y%m%d%H%M%S%f")[:-3]
+    headers = {
+        "Authorization": authorization,
+        "X-Nonce": str(uuid.uuid4()).upper(),
+        "X-Created": created,
+        "X-App-Id": "0",
+        "X-Client-Model": "iPhone",
+        "X-Client-Language": "zh-Hans",
+        "X-Client-Type": "2",
+        "X-Client-Version": client_version,
+        "Accept": "*/*",
+        "Accept-Language": "zh-Hans-CN;q=1",
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Content-Type": "application/json",
+    }
+    if device_id:
+        headers["X-Device-Id"] = device_id
     if vehicle_id:
-        headers["x-vehicle-id"] = vehicle_id
+        headers["X-Vehicle-Id"] = vehicle_id
     return headers
-
-
-def _aito_service_header(enabled: bool) -> dict[str, str]:
-    return {AITO_SERVICE_HEADER_NAME: AITO_SERVICE_HEADER_VALUE} if enabled else {}
-
 
 def _urllib_transport(
     method: str,
@@ -315,9 +354,9 @@ def _urllib_transport(
     request = Request(url, data=body, headers=headers, method=method)
     try:
         with urlopen(request, timeout=timeout) as response:
-            return response.status, dict(response.headers.items()), response.read()
+            return response.status, _response_headers(response.headers), response.read()
     except HTTPError as error:
-        return error.code, dict(error.headers.items()), error.read()
+        return error.code, _response_headers(error.headers), error.read()
 
 
 def _urllib_insecure_transport(
@@ -331,9 +370,20 @@ def _urllib_insecure_transport(
     context = ssl._create_unverified_context()
     try:
         with urlopen(request, timeout=timeout, context=context) as response:
-            return response.status, dict(response.headers.items()), response.read()
+            return response.status, _response_headers(response.headers), response.read()
     except HTTPError as error:
-        return error.code, dict(error.headers.items()), error.read()
+        return error.code, _response_headers(error.headers), error.read()
+
+
+def _response_headers(headers: Any) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key in headers.keys():
+        values = headers.get_all(key) if hasattr(headers, "get_all") else None
+        if values:
+            result[key] = "\n".join(str(value) for value in values)
+        else:
+            result[key] = str(headers[key])
+    return result
 
 
 def _decode_response(body: bytes) -> Any:
@@ -348,17 +398,69 @@ def _decode_response(body: bytes) -> Any:
 
 def _safe_response_summary(response: Any) -> str:
     if isinstance(response, dict):
-        safe_fields = (
-            "resultCode",
-            "errorCode",
-            "returnCode",
-            "msg",
-            "message",
-            "error",
-            "error_description",
-        )
-        summary = {key: response[key] for key in safe_fields if key in response}
-        return json.dumps(summary, ensure_ascii=False) if summary else ""
+        return json.dumps(response, ensure_ascii=False) if response else ""
+    if isinstance(response, str):
+        return response
+    return ""
+
+
+def _safe_error_response(response: Any) -> Any:
+    if isinstance(response, dict):
+        safe: dict[str, Any] = {}
+        _collect_safe_error_fields(response, safe)
+        return safe
     if isinstance(response, str):
         return f"str response length={len(response)}"
-    return ""
+    return response
+
+
+def _collect_safe_error_fields(value: Any, safe: dict[str, Any]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _ERROR_CODE_FIELDS and key not in safe:
+                safe[key] = _safe_error_code(item)
+                continue
+            if key in _ERROR_TEXT_FIELDS and key not in safe:
+                safe[key] = _safe_error_text(item)
+                continue
+            if key in _ERROR_TEXT_FIELDS and _is_safe_business_message(item) and not _is_safe_business_message(safe[key]):
+                safe[key] = item
+                continue
+            _collect_safe_error_fields(item, safe)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_safe_error_fields(item, safe)
+
+
+def _safe_error_text(value: Any) -> str:
+    if _is_safe_business_message(value):
+        return value
+    return f"str length={len(value)}" if isinstance(value, str) else type(value).__name__
+
+
+def _is_safe_business_message(value: Any) -> bool:
+    return isinstance(value, str) and value in _SAFE_BUSINESS_MESSAGES
+
+
+def _safe_error_code(value: Any) -> Any:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return value
+    if isinstance(value, str):
+        return f"str length={len(value)}"
+    return type(value).__name__
+
+
+_ERROR_CODE_FIELDS = ("code", "resultCode", "errorCode", "returnCode")
+_ERROR_TEXT_FIELDS = ("msg", "message", "error", "error_description")
+_SAFE_BUSINESS_MESSAGES = {
+    "Token invalid",
+    "Token already been cancelled",
+    "xid is expired",
+    "not login",
+    "not logged in",
+}

@@ -25,19 +25,31 @@ class StatusField:
     def normalize(self, value: Any) -> Any:
         if self.normalizer is not None:
             return self.normalizer(value)
+        if self.state_class == "measurement":
+            return _normalize_measurement(value)
         if not self.enum_values:
             return value
         for raw_value, normalized in self.enum_values:
             if value == raw_value or str(value) == str(raw_value):
                 return normalized
-        return value
+        return None
+
+
+def _normalize_measurement(value: Any) -> Any:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number.is_integer() else number
 
 
 def _normalize_speed(value: Any) -> Any:
     try:
         speed = float(value)
     except (TypeError, ValueError):
-        return value
+        return None
     if speed < 0 or speed > 255:
         return None
     return int(speed) if speed.is_integer() else speed
