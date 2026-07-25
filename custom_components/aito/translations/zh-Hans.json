@@ -44,8 +44,46 @@
       "battery_soc": {
         "name": "电池电量"
       },
+      "charge_voltage": {
+        "name": "充电电压"
+      },
+      "charge_current": {
+        "name": "充电电流"
+      },
+      "charge_power": {
+        "name": "充电功率"
+      },
+      "remaining_charge_time": {
+        "name": "剩余充电时间"
+      },
+      "electric_wltc_remaining_mileage": {
+        "name": "纯电 WLTC 剩余里程"
+      },
       "wltc_remaining_mileage": {
-        "name": "WLTC 剩余里程"
+        "name": "整车 WLTC 剩余里程"
+      },
+      "total_mileage": {
+        "name": "总里程"
+      },
+      "fuel_wltc_remaining_mileage": {
+        "name": "燃油 WLTC 剩余里程"
+      },
+      "fuel_remaining": {
+        "name": "剩余燃油"
+      },
+      "average_power_consumption": {
+        "name": "平均电耗"
+      },
+      "average_fuel_consumption": {
+        "name": "平均油耗"
+      }
+    },
+    "switch": {
+      "now_departure_plan": {
+        "name": "立即备车"
+      },
+      "sentry_mode": {
+        "name": "哨兵模式"
       }
     }
   }

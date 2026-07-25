@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 DOMAIN = "aito"
-PLATFORMS: tuple[str, ...] = ("sensor",)
+PLATFORMS: tuple[str, ...] = ("sensor", "switch")
 
 CONF_PHONE = "phone"
 CONF_PASSWORD = "password"

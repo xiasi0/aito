@@ -44,8 +44,46 @@
       "battery_soc": {
         "name": "Battery"
       },
+      "charge_voltage": {
+        "name": "Charging voltage"
+      },
+      "charge_current": {
+        "name": "Charging current"
+      },
+      "charge_power": {
+        "name": "Charging power"
+      },
+      "remaining_charge_time": {
+        "name": "Remaining charge time"
+      },
+      "electric_wltc_remaining_mileage": {
+        "name": "Electric WLTC range"
+      },
       "wltc_remaining_mileage": {
-        "name": "WLTC remaining range"
+        "name": "Total WLTC range"
+      },
+      "total_mileage": {
+        "name": "Total mileage"
+      },
+      "fuel_wltc_remaining_mileage": {
+        "name": "Fuel WLTC range"
+      },
+      "fuel_remaining": {
+        "name": "Fuel remaining"
+      },
+      "average_power_consumption": {
+        "name": "Average energy consumption"
+      },
+      "average_fuel_consumption": {
+        "name": "Average fuel consumption"
+      }
+    },
+    "switch": {
+      "now_departure_plan": {
+        "name": "Immediate departure preparation"
+      },
+      "sentry_mode": {
+        "name": "Sentry mode"
       }
     }
   }

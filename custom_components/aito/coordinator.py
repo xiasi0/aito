@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from functools import partial
 import logging
+import time
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -38,12 +40,14 @@ from .const import (
     DOMAIN,
     scan_interval_seconds,
 )
-from .devices import VehicleSpec, dynamic_sections
+from .devices import VehicleSpec, dynamic_sections, has_energy_report_sensors
 from .huawei_auth import HuaweiAuthError, HuaweiIosAuthClient
 from .models import Vehicle
 from .storage import decrypt_password, decrypt_session_context, encrypt_session_context
 
 _LOGGER = logging.getLogger(__name__)
+
+_ENERGY_REPORT_REFRESH_SECONDS = 60 * 60
 
 
 class AitoDataCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
@@ -75,6 +79,8 @@ class AitoDataCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         self.identity = identity if identity is not None else {}
         self.identity_store = identity_store
         self._identity_dirty = False
+        self._energy_reports: dict[str, dict[str, Any]] = {}
+        self._energy_report_refresh_at: dict[str, float] = {}
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         result: dict[str, dict[str, Any]] = {}
@@ -83,18 +89,57 @@ class AitoDataCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             if spec is None:
                 continue
             raw = await self._async_dynamic_infos(vehicle.id, dynamic_sections(spec))
-            result[vehicle.id] = raw if isinstance(raw, dict) else {}
+            data = raw if isinstance(raw, dict) else {}
+            if has_energy_report_sensors(spec):
+                report = await self._async_latest_energy_report(vehicle.id)
+                if report is not None:
+                    self._energy_reports[vehicle.id] = report
+                if cached_report := self._energy_reports.get(vehicle.id):
+                    data = {**data, "energyReport": cached_report}
+            result[vehicle.id] = data
         return result
 
     async def _async_dynamic_infos(self, vehicle_id: str, sections: dict[str, int]) -> Any:
+        return await self._async_apig_request(self.client.dynamic_infos, vehicle_id, sections)
+
+    async def async_control_now_departure_plan(self, vehicle_id: str, *, enabled: bool) -> None:
+        await self._async_apig_request(
+            partial(self.client.control_now_departure_plan, vehicle_id, enabled=enabled),
+            retry_after_refresh=False,
+        )
+        await self.async_request_refresh()
+
+    async def async_control_sentry_mode(self, vehicle_id: str, *, enabled: bool) -> None:
+        await self._async_apig_request(
+            partial(self.client.control_sentry_mode, vehicle_id, enabled=enabled),
+            retry_after_refresh=False,
+        )
+        await self.async_request_refresh()
+
+    async def _async_latest_energy_report(self, vehicle_id: str) -> dict[str, Any] | None:
+        now = time.monotonic()
+        if now < self._energy_report_refresh_at.get(vehicle_id, 0):
+            return None
         try:
-            return await self.hass.async_add_executor_job(self.client.dynamic_infos, vehicle_id, sections)
+            report = await self._async_apig_request(self.client.latest_energy_report, vehicle_id)
+        except AitoApiError:
+            _LOGGER.warning("AITO energy report request failed for vehicle %s", vehicle_id, exc_info=True)
+            self._energy_report_refresh_at[vehicle_id] = now + _ENERGY_REPORT_REFRESH_SECONDS
+            return None
+        self._energy_report_refresh_at[vehicle_id] = now + _ENERGY_REPORT_REFRESH_SECONDS
+        return report if isinstance(report, dict) else None
+
+    async def _async_apig_request(self, request, *args: Any, retry_after_refresh: bool = True) -> Any:
+        try:
+            return await self.hass.async_add_executor_job(request, *args)
         except AitoApiError as error:
             if not _is_cancelled_apig_token(error):
                 raise
             await self._async_refresh_apig_authorization()
+            if not retry_after_refresh:
+                raise
             try:
-                return await self.hass.async_add_executor_job(self.client.dynamic_infos, vehicle_id, sections)
+                return await self.hass.async_add_executor_job(request, *args)
             except AitoApiError as retry_error:
                 if _is_auth_failure(retry_error) or _is_cancelled_apig_token(retry_error):
                     raise ConfigEntryAuthFailed("AITO APIG authorization refresh failed") from retry_error

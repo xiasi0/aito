@@ -242,6 +242,14 @@ class AitoApiClient:
             vehicle_id=vehicle_id,
         )
 
+    def latest_energy_report(self, vehicle_id: str) -> Any:
+        """Return the official total, daily, and monthly energy report."""
+        return self._request_apig(
+            "GET",
+            "/vdas/v1/report/energy/latest",
+            vehicle_id=vehicle_id,
+        )
+
     def location(self, vehicle_id: str) -> Any:
         return self._request_apig("GET", "/vcam/v1/find-car/location", vehicle_id=vehicle_id)
 
@@ -279,6 +287,22 @@ class AitoApiClient:
             {"enabled": str(enabled).lower()},
         )
 
+    def control_now_departure_plan(self, vehicle_id: str, *, enabled: bool) -> None:
+        """Start or stop the official default immediate departure plan."""
+        self._control_vctrl_query(
+            "/vctrl/v1/controls/departure-plans/now/0",
+            vehicle_id,
+            {"enabled": str(enabled).lower()},
+        )
+
+    def control_sentry_mode(self, vehicle_id: str, *, enabled: bool) -> None:
+        """Enable or disable the observed immediate sentry mode control."""
+        self._control_vctrl_query(
+            "/vctrl/v1/controls/sentry",
+            vehicle_id,
+            {"open": str(enabled).lower()},
+        )
+
     def _control_vctrl_query(self, path: str, vehicle_id: str, query: dict[str, str]) -> None:
         command_id = self._request(
             "POST",
@@ -293,7 +317,7 @@ class AitoApiClient:
             transport=self.apig_transport,
         )
         if not isinstance(command_id, str) or not command_id:
-            raise AitoCommandError("AITO air-conditioner command did not return a command id")
+            raise AitoCommandError("AITO vehicle command did not return a command id")
         self._wait_for_command(vehicle_id, command_id)
 
     def _post_omp(self, path: str, payload: JSON, *, extra_headers: dict[str, str] | None = None) -> Any:

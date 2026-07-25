@@ -9,7 +9,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import AitoDataCoordinator
-from .devices import SensorSpec, value_at_path
+from .devices import SensorSpec, sensor_value
 from .models import Vehicle, vehicle_device_info
 
 
@@ -83,4 +83,4 @@ class AitoMappedSensor(CoordinatorEntity[AitoDataCoordinator], SensorEntity):
     @property
     def native_value(self):
         data = self.coordinator.data.get(self._vehicle_id, {}) if self.coordinator.data else {}
-        return value_at_path(data, self._spec.path)
+        return sensor_value(data, self._spec)
