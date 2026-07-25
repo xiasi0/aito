@@ -5,13 +5,15 @@ from typing import Any, TYPE_CHECKING
 
 from .const import (
     CONF_DEVICE_ID,
+    CONF_APIG_AUTHORIZATION,
     CONF_ENCRYPTED_PASSWORD,
     CONF_ENCRYPTED_SESSION_CONTEXT,
     CONF_IVCS_DEVICE_ID,
     CONF_OMP_DEVICE_ID,
     CONF_PHONE,
+    CONF_RAW_STATUS_SNAPSHOT_CREATED,
 )
-from .models import firmware_sw_version
+from .models import Vehicle, vehicle_device_info
 from .storage import decrypt_password, decrypt_session_context
 
 try:
@@ -28,19 +30,14 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    from .api import AitoApiClient
     from .const import (
         CONF_APIG_AUTHORIZATION,
         CONF_ASSET_KEY,
-        CONF_DEVICE_ID,
-        CONF_IVCS_DEVICE_ID,
-        CONF_OMP_DEVICE_ID,
+        PLATFORMS,
         CONF_VEHICLES,
         DOMAIN,
-        PLATFORMS,
     )
-    from .coordinator import AitoDataCoordinator
-    from .models import Vehicle
+    from .resources import remove_vehicle_resources
     from .storage import AitoAssetStore, AitoDeviceIdentityStore, asset_key_from_login_data
 
     asset_key = entry.data.get(CONF_ASSET_KEY)
@@ -75,6 +72,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 data={**entry.data, CONF_ASSET_KEY: target_asset_key},
             )
             await old_asset_store.async_remove()
+            await hass.async_add_executor_job(
+                remove_vehicle_resources,
+                hass.config.path(".storage", DOMAIN, "resources"),
+                str(asset_key),
+            )
     if not assets.get(CONF_APIG_AUTHORIZATION):
         _raise_setup_auth_failed("AITO credential asset is incomplete")
     _validate_saved_login_context(
@@ -87,70 +89,118 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not any(Vehicle.from_api(item).id for item in vehicle_items):
         _raise_setup_auth_failed("AITO vehicle list is empty")
 
-    session_context = _saved_session_context(assets, identity)
-    client_kwargs = {"apig_authorization": assets.get(CONF_APIG_AUTHORIZATION)}
-    ivcs_device_id = _identity_value(identity, CONF_IVCS_DEVICE_ID) or assets.get(CONF_IVCS_DEVICE_ID)
-    if ivcs_device_id:
-        client_kwargs["ivcs_device_id"] = ivcs_device_id
-    omp_cookies = session_context.get("omp_cookies")
-    if isinstance(omp_cookies, dict):
-        client_kwargs["omp_cookies"] = omp_cookies
-    client = AitoApiClient(**client_kwargs, apig_verify_ssl=False)
-    if await _async_backfill_vehicle_sw_versions(hass, client, vehicle_items):
-        assets_dirty = True
+    vehicles = [vehicle for item in vehicle_items for vehicle in (Vehicle.from_api(item),) if vehicle.id]
+    raw_status_snapshots: dict[str, dict[str, Any]] = {}
+    if not assets.get(CONF_RAW_STATUS_SNAPSHOT_CREATED):
+        raw_status_snapshots = await _async_capture_raw_status_snapshots(hass, assets, identity, vehicles)
+        if raw_status_snapshots:
+            assets[CONF_RAW_STATUS_SNAPSHOT_CREATED] = True
+            assets_dirty = True
     if assets_dirty and asset_store is not None:
         await asset_store.async_save(assets)
-    vehicles = [vehicle for item in vehicle_items for vehicle in (Vehicle.from_api(item),) if vehicle.id]
-    coordinator = AitoDataCoordinator(
-        hass,
-        entry,
-        client,
-        vehicles,
-        assets=assets,
-        asset_store=asset_store,
-        identity=identity,
-        identity_store=identity_store,
-    )
-
-    await coordinator.async_config_entry_first_refresh()
+    _remove_legacy_entities(hass, entry, vehicles)
+    _register_vehicle_devices(hass, entry, vehicles)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
-        "client": client,
-        "coordinator": coordinator,
         "assets": assets,
         "identity": identity,
+        "raw_status_sensor_loaded": bool(assets.get(CONF_RAW_STATUS_SNAPSHOT_CREATED)),
+        "raw_status_snapshots": raw_status_snapshots,
         "vehicles": vehicles,
     }
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    if assets.get(CONF_RAW_STATUS_SNAPSHOT_CREATED):
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from .const import DOMAIN, PLATFORMS
 
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    loaded = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("raw_status_sensor_loaded", False)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS) if loaded else True
     if unload_ok:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     return unload_ok
 
 
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    await hass.config_entries.async_reload(entry.entry_id)
-
-
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    from .const import CONF_ASSET_KEY
+    from .const import CONF_ASSET_KEY, DOMAIN
+    from .resources import remove_vehicle_resources
     from .storage import AitoAssetStore
 
     asset_key = entry.data.get(CONF_ASSET_KEY)
     if asset_key:
         await AitoAssetStore(hass, asset_key).async_remove()
+        await hass.async_add_executor_job(
+            remove_vehicle_resources,
+            hass.config.path(".storage", DOMAIN, "resources"),
+            str(asset_key),
+        )
 
 
 def _raise_setup_auth_failed(message: str) -> None:
     _LOGGER.warning("%s; reconfigure the integration", message)
     raise ConfigEntryAuthFailed(message)
+
+
+def _register_vehicle_devices(hass: HomeAssistant, entry: ConfigEntry, vehicles: list[Vehicle]) -> None:
+    """Create device-registry records without creating any HA entities."""
+    from homeassistant.helpers import device_registry as dr
+
+    registry = dr.async_get(hass)
+    for vehicle in vehicles:
+        info = vehicle_device_info(vehicle)
+        registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers=info["identifiers"],
+            name=info.get("name"),
+            manufacturer=info.get("manufacturer"),
+            model=info.get("model"),
+            sw_version=info.get("sw_version"),
+        )
+
+
+def _remove_legacy_entities(hass: HomeAssistant, entry: ConfigEntry, vehicles: list[Vehicle]) -> None:
+    """Remove entities created by versions that exposed live vehicle state."""
+    from homeassistant.helpers import entity_registry as er
+
+    registry = er.async_get(hass)
+    raw_status_unique_ids = {f"{vehicle.id}_raw_vehicle_status" for vehicle in vehicles}
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if entity.unique_id not in raw_status_unique_ids:
+            registry.async_remove(entity.entity_id)
+
+
+async def _async_capture_raw_status_snapshots(
+    hass: HomeAssistant,
+    assets: dict[str, Any],
+    identity: dict[str, Any],
+    vehicles: list[Vehicle],
+) -> dict[str, dict[str, Any]]:
+    """Capture APIG status once; the response is intentionally not persisted by us."""
+    from .api import AitoApiClient
+
+    authorization = assets.get(CONF_APIG_AUTHORIZATION)
+    device_id = _identity_value(identity, CONF_IVCS_DEVICE_ID) or assets.get(CONF_IVCS_DEVICE_ID)
+    if not isinstance(authorization, str) or not authorization or not isinstance(device_id, str) or not device_id:
+        return {}
+    client = AitoApiClient(
+        apig_authorization=authorization,
+        ivcs_device_id=device_id,
+        apig_verify_ssl=False,
+    )
+    snapshots: dict[str, dict[str, Any]] = {}
+    for vehicle in vehicles:
+        try:
+            response = await hass.async_add_executor_job(client.dynamic_infos, vehicle.id)
+        except Exception:
+            _LOGGER.warning("AITO raw vehicle status snapshot failed", exc_info=True)
+            return {}
+        if not isinstance(response, dict):
+            _LOGGER.warning("AITO raw vehicle status snapshot was not an object")
+            return {}
+        snapshots[vehicle.id] = response
+    return snapshots
 
 
 def _validate_saved_login_context(
@@ -199,39 +249,3 @@ def _saved_session_context(assets: dict[str, Any], identity: dict[str, Any]) -> 
     if not isinstance(encrypted_context, str) or not isinstance(credential_key, str) or not credential_key:
         raise ValueError("saved session context is invalid")
     return decrypt_session_context(encrypted_context, credential_key)
-
-
-async def _async_backfill_vehicle_sw_versions(
-    hass: HomeAssistant,
-    client: AitoApiClient,
-    vehicle_items: list[dict[str, Any]],
-) -> bool:
-    updated = False
-    for item in vehicle_items:
-        existing_version = firmware_sw_version(item)
-        if existing_version:
-            if not item.get("swVersion"):
-                item["swVersion"] = existing_version
-                updated = True
-            continue
-
-        vehicle_id = item.get("vehicleIdStr") or item.get("vehicleId") or item.get("id")
-        if not vehicle_id:
-            continue
-        try:
-            response = await _async_executor_job(hass, client.firmware_current_version, str(vehicle_id))
-        except Exception:
-            _LOGGER.debug("AITO firmware version lookup failed during setup", exc_info=True)
-            continue
-        version = firmware_sw_version(response)
-        if version:
-            item["swVersion"] = version
-            updated = True
-    return updated
-
-
-async def _async_executor_job(hass: HomeAssistant, func, *args):
-    async_add_executor_job = getattr(hass, "async_add_executor_job", None)
-    if async_add_executor_job is not None:
-        return await async_add_executor_job(func, *args)
-    return func(*args)

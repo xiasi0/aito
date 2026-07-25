@@ -6,7 +6,6 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import callback
 
 try:
     from homeassistant.helpers import selector
@@ -31,7 +30,7 @@ from .const import (
     CONF_OMP_DEVICE_ID,
     CONF_PASSWORD,
     CONF_PHONE,
-    CONF_SCAN_INTERVAL,
+    CONF_RAW_STATUS_SNAPSHOT_CREATED,
     CONF_REFRESH_TOKEN,
     CONF_SMS_CODE,
     CONF_SESSION_KEY,
@@ -40,17 +39,16 @@ from .const import (
     CONF_SERVICE_LOGIN_STATUS,
     CONF_SERVICE_USER_INFO,
     CONF_USER_INFO,
+    CONF_VEHICLE_RESOURCES,
     CONF_VEHICLES,
     CONF_XID,
     DEFAULT_DEVICE_MODEL,
     DEFAULT_NATIVE_DEVICE_MODEL,
-    DEFAULT_SCAN_INTERVAL_SECONDS,
     DOMAIN,
-    MIN_SCAN_INTERVAL_SECONDS,
-    scan_interval_seconds,
 )
 from .huawei_auth import HuaweiAuthError, HuaweiIosAuthClient
-from .models import Vehicle, firmware_sw_version
+from .models import Vehicle, firmware_sw_version, vehicle_merge_items, vehicle_resource_manifest
+from .resources import AitoResourceError, cache_vehicle_resources, remove_vehicle_resources
 from .storage import (
     AitoAssetStore,
     AitoDeviceIdentityStore,
@@ -269,10 +267,31 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         client.apig_authorization = apig_authorization
         vehicles = client.apig_vehicles()
         vehicle_items = vehicles if isinstance(vehicles, list) else vehicles.get("data", []) if isinstance(vehicles, dict) else []
+        profiles: dict[str, dict[str, Any]] = {}
+        resource_manifests: dict[str, dict[str, str | None]] = {}
+        if self._reauth_entry is None:
+            profiles, resource_manifests = self._vehicle_profiles(
+                client,
+                xid=str(xid),
+                device_id=omp_device_id,
+                user_id=str(omp_user_id) if omp_user_id else None,
+                identity=identity,
+            )
+            vehicle_ids = {
+                str(item.get("vehicleIdStr") or item.get("vehicleId") or "")
+                for item in vehicle_items
+                if isinstance(item, dict)
+            }
+            if not vehicle_ids or not vehicle_ids.issubset(profiles):
+                raise AitoLoginRejected("vehicle profile lookup did not cover every vehicle")
         stored_vehicles = []
         for item in vehicle_items:
             if not isinstance(item, dict):
                 continue
+            item = dict(item)
+            vehicle_id = str(item.get("vehicleIdStr") or item.get("vehicleId") or "")
+            if vehicle_id in profiles:
+                item["profile"] = profiles[vehicle_id]
             stored_vehicle = Vehicle.from_api(item).as_storage()
             if not stored_vehicle.get("vehicleIdStr"):
                 continue
@@ -309,7 +328,37 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_APIG_AUTHORIZATION: apig_authorization,
             "vehicle_tokens": vehicle_response.get("vehicleTokenInfoList") if isinstance(vehicle_response, dict) else [],
             CONF_VEHICLES: stored_vehicles,
+            CONF_VEHICLE_RESOURCES: resource_manifests,
         }
+
+    def _vehicle_profiles(
+        self,
+        client: AitoApiClient,
+        *,
+        xid: str,
+        device_id: str,
+        user_id: str | None,
+        identity: dict[str, Any],
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, str | None]]]:
+        response = client.vehicle_management_list(
+            xid=xid,
+            device_id=device_id,
+            device_model=str(identity.get("device_model") or DEFAULT_DEVICE_MODEL),
+            native_device_model=str(identity.get("native_device_model") or DEFAULT_NATIVE_DEVICE_MODEL),
+            user_id=user_id,
+        )
+
+        profiles: dict[str, dict[str, Any]] = {}
+        resource_manifests: dict[str, dict[str, str | None]] = {}
+        for item in vehicle_merge_items(response):
+            vehicle = Vehicle.from_api(item)
+            if vehicle.id:
+                profiles[vehicle.id] = vehicle.profile.as_storage()
+                if resource_manifest := vehicle_resource_manifest(item):
+                    resource_manifests[vehicle.id] = resource_manifest
+        if not profiles:
+            raise AitoLoginRejected("vehicle profile lookup returned no vehicles")
+        return profiles, resource_manifests
 
     def _attach_current_version(self, client: AitoApiClient, stored_vehicle: dict[str, Any]) -> None:
         try:
@@ -333,7 +382,20 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._reauth_entry is None:
             await self.async_set_unique_id(asset_key)
             self._abort_if_unique_id_configured()
-        await self._save_and_verify_assets(asset_key, data)
+            try:
+                data[CONF_VEHICLE_RESOURCES] = await self._async_cache_vehicle_resources(asset_key, data)
+                await self._save_and_verify_assets(asset_key, data)
+            except Exception:
+                await AitoAssetStore(self.hass, asset_key).async_remove()
+                await self.hass.async_add_executor_job(
+                    remove_vehicle_resources,
+                    self.hass.config.path(".storage", DOMAIN, "resources"),
+                    asset_key,
+                )
+                raise
+        else:
+            await self._async_restore_static_data(asset_key, data)
+            await self._save_and_verify_assets(asset_key, data)
         if self._reauth_entry is not None:
             old_asset_key = (
                 self._reauth_entry.data.get(CONF_ASSET_KEY)
@@ -343,6 +405,11 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if old_asset_key and old_asset_key != asset_key:
                 try:
                     await AitoAssetStore(self.hass, str(old_asset_key)).async_remove()
+                    await self.hass.async_add_executor_job(
+                        remove_vehicle_resources,
+                        self.hass.config.path(".storage", DOMAIN, "resources"),
+                        str(old_asset_key),
+                    )
                 except Exception:
                     _LOGGER.debug("AITO old credential asset cleanup failed during reauth", exc_info=True)
             return self.async_update_reload_and_abort(
@@ -354,31 +421,42 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(
             title="AITO",
             data=entry_data,
-            options={CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL_SECONDS},
         )
 
-    @staticmethod
-    @callback
-    def async_get_options_flow(config_entry):
-        return AitoOptionsFlow()
+    async def _async_cache_vehicle_resources(self, asset_key: str, data: dict[str, Any]) -> dict[str, dict[str, str | None]]:
+        manifests = data.get(CONF_VEHICLE_RESOURCES)
+        if not isinstance(manifests, dict):
+            return {}
+        try:
+            return await self.hass.async_add_executor_job(
+                cache_vehicle_resources,
+                self.hass.config.path(".storage", DOMAIN, "resources"),
+                asset_key,
+                manifests,
+            )
+        except AitoResourceError:
+            _LOGGER.exception("AITO vehicle resource download failed")
+            raise
 
-
-class AitoOptionsFlow(config_entries.OptionsFlow):
-    async def async_step_init(self, user_input: dict[str, Any] | None = None):
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
-
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_SCAN_INTERVAL,
-                        default=scan_interval_seconds(self.config_entry.options),
-                    ): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL_SECONDS)),
-                }
-            ),
-        )
+    async def _async_restore_static_data(self, asset_key: str, data: dict[str, Any]) -> None:
+        existing = await AitoAssetStore(self.hass, asset_key).async_load()
+        previous_vehicles = existing.get(CONF_VEHICLES) if isinstance(existing, dict) else None
+        if isinstance(previous_vehicles, list):
+            profiles = {
+                str(item.get("vehicleIdStr") or item.get("vehicleId") or ""): item.get("profile")
+                for item in previous_vehicles
+                if isinstance(item, dict) and isinstance(item.get("profile"), dict)
+            }
+            for vehicle in data.get(CONF_VEHICLES, []):
+                if not isinstance(vehicle, dict):
+                    continue
+                vehicle_id = str(vehicle.get("vehicleIdStr") or vehicle.get("vehicleId") or "")
+                if profile := profiles.get(vehicle_id):
+                    vehicle["profile"] = profile
+        resources = existing.get(CONF_VEHICLE_RESOURCES) if isinstance(existing, dict) else None
+        data[CONF_VEHICLE_RESOURCES] = resources if isinstance(resources, dict) else {}
+        if existing.get(CONF_RAW_STATUS_SNAPSHOT_CREATED) is True:
+            data[CONF_RAW_STATUS_SNAPSHOT_CREATED] = True
 
 
 def _ensure_trusted_omp_session(

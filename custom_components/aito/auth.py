@@ -125,6 +125,19 @@ def session_key_status(response: Any) -> str | None:
     return None
 
 
+def needs_user_session_refresh(response: Any) -> bool:
+    if not isinstance(response, dict):
+        return False
+    return (
+        str(response.get("code")) in {"401", "100011"}
+        or str(response.get("resultCode")) in {"1000019", "3001002"}
+        or any(
+            response.get(key) in {"xid is expired", "not login", "not logged in"}
+            for key in ("msg", "message", "error", "error_description")
+        )
+    )
+
+
 def _prefer_session_key(credentials: dict[str, Any], response: Any) -> dict[str, Any]:
     session_key = _find_session_key(response)
     if not session_key:

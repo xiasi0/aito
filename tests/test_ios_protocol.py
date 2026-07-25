@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from custom_components.aito.api import AitoApiClient, _urllib_insecure_transport, _urllib_transport
-from custom_components.aito.auth import extract_credentials, session_key_status
+from custom_components.aito.auth import extract_credentials, needs_user_session_refresh, session_key_status
 from custom_components.aito.huawei_auth import HuaweiIosAuthClient
 from custom_components.aito.storage import (
     AitoDeviceIdentityStore,
@@ -119,6 +119,27 @@ class IosProtocolTests(TestCase):
         self.assertEqual(ivcs_headers["X-Device-Id"], "ivcs-device")
         self.assertEqual(ivcs_headers["X-Client-Version"], "HUAWEI_IVCS_APP_3.002.300")
 
+    def test_vehicle_profile_request_uses_official_omp_list_contract(self) -> None:
+        transport = RecordingTransport()
+        client = AitoApiClient(transport=transport)
+
+        client.vehicle_management_list(
+            xid="session-key",
+            device_id="omp-device",
+            device_model="iPhone",
+            native_device_model="iPhone8,1",
+            user_id="omp-user",
+        )
+
+        _, url, headers, body = transport.calls[1]
+        self.assertTrue(url.endswith("/xcar/omp/xbs/vehicle/management/list"))
+        self.assertEqual(headers["xid"], "session-key")
+        self.assertEqual(headers["uid"], "omp-user")
+        self.assertEqual(
+            json.loads((body or b"{}").decode()),
+            {"refreshFlag": "true", "deviceInfo": {"type": "1", "id": "omp-device", "model": "iPhone"}},
+        )
+
     def test_account_identity_key_is_stable_and_session_context_is_encrypted(self) -> None:
         self.assertEqual(identity_account_key("13000000000"), identity_account_key(" 130-0000-0000 "))
         self.assertNotEqual(identity_account_key("13000000000"), identity_account_key("13100000000"))
@@ -163,6 +184,10 @@ class IosProtocolTests(TestCase):
         self.assertEqual(session_key_status({"data": {"userInfo": {"sessionKeyStatus": "0"}}}), "0")
         self.assertEqual(session_key_status({"userInfo": {"sessionKeyStatus": 1}}), "1")
         self.assertIsNone(session_key_status({"oauthToken": {"accessToken": "opaque"}}))
+
+    def test_omp_session_error_requires_user_session_refresh(self) -> None:
+        self.assertTrue(needs_user_session_refresh({"code": 10011, "resultCode": "1000019"}))
+        self.assertFalse(needs_user_session_refresh({"code": 0, "resultCode": "0"}))
 
     def test_omp_xid_uses_session_key_before_oauth_token_xid(self) -> None:
         credentials = extract_credentials(

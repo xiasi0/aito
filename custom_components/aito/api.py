@@ -4,9 +4,11 @@ from datetime import datetime
 import json
 import secrets
 import ssl
+import time
 import uuid
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .const import (
@@ -53,6 +55,10 @@ class AitoApiError(RuntimeError):
         super().__init__(message)
         self.status = status
         self.response = safe_response
+
+
+class AitoCommandError(RuntimeError):
+    """A vehicle command was rejected or did not finish in time."""
 
 
 class AitoApiClient:
@@ -190,6 +196,44 @@ class AitoApiClient:
     def apig_vehicles(self) -> Any:
         return self._request_apig("GET", "/vcam/v1/accounts/vehicles")
 
+    def vehicle_management_list(
+        self,
+        *,
+        xid: str,
+        device_id: str,
+        device_model: str = DEFAULT_DEVICE_MODEL,
+        native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL,
+        ec: str = DEFAULT_VEHICLE_EC,
+        user_id: str | None = None,
+        refresh: bool = True,
+    ) -> Any:
+        """Return the official OMP vehicle profile and feature list."""
+        payload: JSON = {
+            "refreshFlag": "true" if refresh else "false",
+            "deviceInfo": {"type": "1", "id": device_id, "model": device_model},
+        }
+        return self._post_omp(
+            "/xcar/omp/xbs/vehicle/management/list",
+            payload,
+            extra_headers=_omp_session_headers(native_device_model, xid=xid, user_id=user_id, ec=ec),
+        )
+
+    def vehicle_dictionary_values(
+        self,
+        codes: list[str],
+        *,
+        xid: str,
+        native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL,
+        ec: str = DEFAULT_VEHICLE_EC,
+        user_id: str | None = None,
+    ) -> Any:
+        """Return the official OMP dictionary records for the requested codes."""
+        return self._post_omp(
+            "/xcar/omp/xbs/v2/queryBatchDictItem",
+            {"dicItemCodes": codes},
+            extra_headers=_omp_session_headers(native_device_model, xid=xid, user_id=user_id, ec=ec),
+        )
+
     def dynamic_infos(self, vehicle_id: str, sections: JSON | None = None) -> Any:
         return self._request_apig(
             "POST",
@@ -203,6 +247,54 @@ class AitoApiClient:
 
     def firmware_current_version(self, vehicle_id: str) -> Any:
         return self._request_apig("GET", "/vota/v1/firmware/current-version", vehicle_id=vehicle_id)
+
+    def control_air_conditioner(
+        self,
+        vehicle_id: str,
+        *,
+        enabled: bool,
+        target_temp: int | None = None,
+    ) -> None:
+        """Run the observed A/C command and wait for its asynchronous result."""
+        query = {"enabled": str(enabled).lower()}
+        if target_temp is not None:
+            query["targetTemp"] = str(target_temp)
+        self._control_vctrl_query("/vctrl/v1/controls/air-conditioner", vehicle_id, query)
+
+    def control_air_conditioner_rapid(self, vehicle_id: str, *, enabled: bool, mode: int) -> None:
+        """Run the observed rapid cool or rapid heat command."""
+        if mode not in {1, 2}:
+            raise ValueError("AITO rapid air-conditioner mode must be 1 or 2")
+        self._control_vctrl_query(
+            "/vctrl/v1/controls/air-conditioner/rapid",
+            vehicle_id,
+            {"enabled": str(enabled).lower(), "mode": str(mode)},
+        )
+
+    def control_defrost(self, vehicle_id: str, *, enabled: bool) -> None:
+        """Run the observed front-defrost command."""
+        self._control_vctrl_query(
+            "/vctrl/v1/controls/hvac",
+            vehicle_id,
+            {"enabled": str(enabled).lower()},
+        )
+
+    def _control_vctrl_query(self, path: str, vehicle_id: str, query: dict[str, str]) -> None:
+        command_id = self._request(
+            "POST",
+            f"{self.apig_base_url}{path}?{urlencode(query)}",
+            _apig_headers(
+                self._require_apig_authorization(),
+                self.apig_client_version,
+                self.ivcs_device_id,
+                vehicle_id,
+            ),
+            None,
+            transport=self.apig_transport,
+        )
+        if not isinstance(command_id, str) or not command_id:
+            raise AitoCommandError("AITO air-conditioner command did not return a command id")
+        self._wait_for_command(vehicle_id, command_id)
 
     def _post_omp(self, path: str, payload: JSON, *, extra_headers: dict[str, str] | None = None) -> Any:
         if not self._omp_warm_attempted:
@@ -244,16 +336,37 @@ class AitoApiClient:
         *,
         vehicle_id: str | None = None,
     ) -> Any:
-        if not self.apig_authorization:
-            raise ValueError("missing APIG authorization")
+        authorization = self._require_apig_authorization()
         body = None if method == "GET" else json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
         return self._request(
             method,
             f"{self.apig_base_url}/{path.lstrip('/')}",
-            _apig_headers(self.apig_authorization, self.apig_client_version, self.ivcs_device_id, vehicle_id),
+            _apig_headers(authorization, self.apig_client_version, self.ivcs_device_id, vehicle_id),
             body,
             transport=self.apig_transport,
         )
+
+    def _require_apig_authorization(self) -> str:
+        if not self.apig_authorization:
+            raise ValueError("missing APIG authorization")
+        return self.apig_authorization
+
+    def _wait_for_command(self, vehicle_id: str, command_id: str) -> None:
+        deadline = time.monotonic() + 20
+        while True:
+            response = self._request_apig(
+                "GET",
+                f"/vctrl/v2/controls/commands/{quote(command_id, safe='')}",
+                vehicle_id=vehicle_id,
+            )
+            result_code = response.get("resultCode") if isinstance(response, Mapping) else None
+            if result_code in {0, "0"}:
+                return
+            if result_code not in {-100, "-100"}:
+                raise AitoCommandError(f"AITO vehicle command failed with resultCode={result_code!r}")
+            if time.monotonic() >= deadline:
+                raise AitoCommandError("AITO vehicle command timed out")
+            time.sleep(0.5)
 
     def _request(
         self,

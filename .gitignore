@@ -4,5 +4,6 @@ manual_long_store.json
 loginCallback*.txt
 *.tmp
 .tmp/
+tests/
 __pycache__/
 .pytest_cache/
