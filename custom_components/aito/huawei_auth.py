@@ -102,7 +102,7 @@ class HuaweiIosAuthClient:
                 "deviceInfo": json.dumps(self._device_info(), separators=(",", ":")),
             }
         ).encode("utf-8")
-        headers = self._headers(HUAWEI_LOGIN_V3_PATH, "application/x-www-form-urlencoded")
+        headers = self._headers("application/x-www-form-urlencoded")
         response = self._post(HUAWEI_LOGIN_V3_PATH, body, headers)
         fields = _parse_form_response(response)
         if fields.get("resultCode") not in (None, "0"):
@@ -131,7 +131,7 @@ class HuaweiIosAuthClient:
         response = self._post(
             HUAWEI_GET_SMS_CODE_PATH,
             ET.tostring(root, encoding="utf-8", xml_declaration=True),
-            self._headers(HUAWEI_GET_SMS_CODE_PATH, "text/xml; charset=utf-8"),
+            self._headers("text/xml; charset=utf-8"),
         )
         _raise_huawei_result_error("SMS request", response)
 
@@ -163,7 +163,7 @@ class HuaweiIosAuthClient:
                 "flag": "1",
             }
         ).encode("utf-8")
-        headers = self._headers(HUAWEI_LOGIN_V3_PATH, "application/x-www-form-urlencoded")
+        headers = self._headers("application/x-www-form-urlencoded")
         response = self._post(HUAWEI_LOGIN_V3_PATH, body, headers)
         fields = _parse_form_response(response)
         if fields.get("resultCode") not in (None, "0"):
@@ -183,7 +183,7 @@ class HuaweiIosAuthClient:
             "deviceSecure": 0,
             "deviceInfo": {**self._device_info(), "wifiSSID": "", "netType": "0"},
         }
-        response = self._post_json(HUAWEI_ST_AUTH_PATH, payload, self._headers(HUAWEI_ST_AUTH_PATH, "application/json; charset=utf-8"))
+        response = self._post_json(HUAWEI_ST_AUTH_PATH, payload, self._headers("application/json; charset=utf-8"))
         if not isinstance(response, dict):
             raise HuaweiAuthError("stAuth", response)
         _raise_huawei_result_error("stAuth", response)
@@ -206,7 +206,7 @@ class HuaweiIosAuthClient:
         }
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         authorization = _digest_authorization(user_id, service_token, "setAsymPublicKey")
-        headers = self._headers(HUAWEI_SET_ASYM_PUBLIC_KEY_PATH, "application/json; charset=utf-8")
+        headers = self._headers("application/json; charset=utf-8")
         headers.update(
             {
                 "Authorization": authorization,
@@ -275,7 +275,7 @@ class HuaweiIosAuthClient:
             "<languageCode>zh-Hans-CN</languageCode>"
             "</GetResourceReq>"
         ).encode("utf-8")
-        response = self._post(HUAWEI_GET_RESOURCE_PATH, body, self._headers(HUAWEI_GET_RESOURCE_PATH, "text/xml; charset=utf-8"))
+        response = self._post(HUAWEI_GET_RESOURCE_PATH, body, self._headers("text/xml; charset=utf-8"))
         public_key = _extract_public_key(response)
         if not public_key:
             raise HuaweiAuthError("RSA resource lookup", "missing public key")
@@ -306,7 +306,7 @@ class HuaweiIosAuthClient:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         return self._post(path, body, headers)
 
-    def _headers(self, path: str, content_type: str) -> dict[str, str]:
+    def _headers(self, content_type: str) -> dict[str, str]:
         return {
             "Accept": "*/*",
             "Accept-Language": "zh-cn",

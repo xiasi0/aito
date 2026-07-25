@@ -57,7 +57,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except ModuleNotFoundError:
         identity_store = None
         identity = {}
-    assets_dirty = _remove_obsolete_auth_state(assets)
+    assets_dirty = False
     for key in (CONF_DEVICE_ID, CONF_OMP_DEVICE_ID, CONF_IVCS_DEVICE_ID):
         identity_value = _identity_value(identity, key)
         if identity_value and assets.get(key) != identity_value:
@@ -184,13 +184,6 @@ def _validate_saved_login_context(
                 raise ValueError("saved session cookies are incomplete")
         except Exception:
             _raise_setup_auth_failed("AITO saved login context is invalid")
-
-
-def _remove_obsolete_auth_state(assets: dict[str, Any]) -> bool:
-    if isinstance(assets.get("huawei"), dict):
-        assets.pop("huawei", None)
-        return True
-    return False
 
 
 def _identity_value(identity: dict[str, Any], key: str) -> str | None:

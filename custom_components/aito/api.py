@@ -63,7 +63,6 @@ class AitoApiClient:
         apig_base_url: str = APIG_BASE_URL,
         apig_authorization: str | None = None,
         apig_client_version: str = DEFAULT_APIG_CLIENT_VERSION,
-        device_id: str | None = None,
         ivcs_device_id: str | None = None,
         omp_cookies: Mapping[str, str] | None = None,
         timeout: float = 20.0,
@@ -74,7 +73,7 @@ class AitoApiClient:
         self.apig_base_url = apig_base_url.rstrip("/")
         self.apig_authorization = apig_authorization
         self.apig_client_version = apig_client_version
-        self.device_id = ivcs_device_id or device_id
+        self.ivcs_device_id = ivcs_device_id
         self.timeout = timeout
         self.transport = transport or _urllib_transport
         self.apig_transport = transport or (_urllib_transport if apig_verify_ssl else _urllib_insecure_transport)
@@ -251,7 +250,7 @@ class AitoApiClient:
         return self._request(
             method,
             f"{self.apig_base_url}/{path.lstrip('/')}",
-            _apig_headers(self.apig_authorization, self.apig_client_version, self.device_id, vehicle_id),
+            _apig_headers(self.apig_authorization, self.apig_client_version, self.ivcs_device_id, vehicle_id),
             body,
             transport=self.apig_transport,
         )

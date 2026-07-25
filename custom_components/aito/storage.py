@@ -12,7 +12,6 @@ from .const import (
     CONF_IVCS_DEVICE_ID,
     CONF_OMP_DEVICE_ID,
     CONF_PHONE,
-    CONF_VEHICLES,
     DEFAULT_DEVICE_MODEL,
     DEFAULT_NATIVE_DEVICE_MODEL,
     DOMAIN,
@@ -23,7 +22,6 @@ if TYPE_CHECKING:
 
 ASSET_STORAGE_VERSION = 1
 IDENTITY_STORAGE_VERSION = 2
-MOBILE_NUMBER_KEYS = ("mobileNumber", "mobile_number", "phoneNumber", "phone_number")
 DEVICE_IDENTITY_KEY = f"{DOMAIN}/device_identity.json"
 IDENTITY_ACCOUNT_KEY = "identity_account_key"
 
@@ -38,46 +36,11 @@ def device_identity_storage_key() -> str:
     return DEVICE_IDENTITY_KEY
 
 
-def _legacy_asset_storage_key(asset_key: str) -> str:
-    return f"{DOMAIN}/assets/{_safe_asset_key(asset_key)}"
-
-
 def asset_key_from_login_data(data: dict[str, Any]) -> str:
-    mobile_number = _find_first_key(data, MOBILE_NUMBER_KEYS)
-    if mobile_number:
-        return _safe_asset_key(str(mobile_number))
-
     phone = data.get(CONF_PHONE)
-    if phone:
-        return _safe_asset_key(str(phone))
-
-    vehicles = data.get(CONF_VEHICLES)
-    if isinstance(vehicles, list):
-        for vehicle in vehicles:
-            if not isinstance(vehicle, dict):
-                continue
-            vehicle_id = vehicle.get("vehicleIdStr") or vehicle.get("vehicleId") or vehicle.get("id")
-            if vehicle_id:
-                return _safe_asset_key(str(vehicle_id))
-    return _safe_asset_key(str(data[CONF_DEVICE_ID]))
-
-
-def _find_first_key(value: Any, keys: tuple[str, ...]) -> Any:
-    if isinstance(value, dict):
-        for key in keys:
-            found = value.get(key)
-            if found:
-                return found
-        for nested in value.values():
-            found = _find_first_key(nested, keys)
-            if found:
-                return found
-    if isinstance(value, list):
-        for nested in value:
-            found = _find_first_key(nested, keys)
-            if found:
-                return found
-    return None
+    if not isinstance(phone, str) or not phone:
+        raise ValueError("AITO asset data is missing phone")
+    return _safe_asset_key(phone)
 
 
 def _safe_asset_key(value: str) -> str:
@@ -117,17 +80,11 @@ class AitoAssetStore:
         from homeassistant.helpers.storage import Store
 
         self._store = Store(hass, ASSET_STORAGE_VERSION, asset_storage_key(asset_key))
-        legacy_key = _legacy_asset_storage_key(asset_key)
-        self._legacy_store = Store(hass, ASSET_STORAGE_VERSION, legacy_key) if legacy_key != asset_storage_key(asset_key) else None
 
     async def async_load(self) -> dict[str, Any]:
         data = await self._store.async_load()
         if isinstance(data, dict):
             return data
-        if self._legacy_store is not None:
-            legacy_data = await self._legacy_store.async_load()
-            if isinstance(legacy_data, dict):
-                return legacy_data
         return {}
 
     async def async_save(self, data: dict[str, Any]) -> None:
@@ -135,8 +92,6 @@ class AitoAssetStore:
 
     async def async_remove(self) -> None:
         await self._store.async_remove()
-        if self._legacy_store is not None:
-            await self._legacy_store.async_remove()
 
 
 class AitoDeviceIdentityStore:
@@ -147,23 +102,18 @@ class AitoDeviceIdentityStore:
 
     async def async_get_or_create(self, phone: str) -> dict[str, Any]:
         account_key = identity_account_key(phone)
-        data = await self._store.async_load()
-        accounts = _identity_accounts(data)
+        accounts = _identity_accounts(await self._store.async_load())
         identity = accounts.get(account_key)
-        if identity is None and _is_legacy_identity(data):
-            identity = dict(data)
 
         if identity is None:
             identity = _new_identity()
         else:
             identity = dict(identity)
 
-        changed = _ensure_identity_fields(identity)
+        _ensure_identity_fields(identity)
         identity[IDENTITY_ACCOUNT_KEY] = account_key
-        if accounts.get(account_key) != _stored_identity(identity) or _is_legacy_identity(data):
+        if accounts.get(account_key) != _stored_identity(identity):
             accounts[account_key] = _stored_identity(identity)
-            await self._store.async_save({"accounts": accounts})
-        elif changed:
             await self._store.async_save({"accounts": accounts})
         return identity
 
@@ -197,10 +147,6 @@ def _identity_accounts(data: Any) -> dict[str, dict[str, Any]]:
     return {str(key): dict(value) for key, value in accounts.items() if isinstance(value, dict)}
 
 
-def _is_legacy_identity(data: Any) -> bool:
-    return isinstance(data, dict) and isinstance(data.get(CONF_DEVICE_ID), str) and bool(data[CONF_DEVICE_ID])
-
-
 def _new_identity() -> dict[str, Any]:
     from .auth import P256KeyPair
 
@@ -216,32 +162,24 @@ def _new_identity() -> dict[str, Any]:
     }
 
 
-def _ensure_identity_fields(identity: dict[str, Any]) -> bool:
-    changed = False
+def _ensure_identity_fields(identity: dict[str, Any]) -> None:
     device_id = identity.get(CONF_DEVICE_ID)
     if not isinstance(device_id, str) or not device_id:
         device_id = str(uuid.uuid4()).upper()
         identity[CONF_DEVICE_ID] = device_id
-        changed = True
     for key in (CONF_OMP_DEVICE_ID, CONF_IVCS_DEVICE_ID):
         if not isinstance(identity.get(key), str) or not identity[key]:
             identity[key] = device_id
-            changed = True
     if not identity.get("credential_key"):
         identity["credential_key"] = AitoDeviceIdentityStore.generate_credential_key()
-        changed = True
     if not all(identity.get(key) for key in ("p256_key_id", "p256_public_key", "p256_private_key_pem")):
         from .auth import P256KeyPair
 
         identity.update(P256KeyPair.generate().as_storage())
-        changed = True
     if not identity.get("device_model"):
         identity["device_model"] = DEFAULT_DEVICE_MODEL
-        changed = True
     if not identity.get("native_device_model"):
         identity["native_device_model"] = DEFAULT_NATIVE_DEVICE_MODEL
-        changed = True
-    return changed
 
 
 def _stored_identity(identity: dict[str, Any]) -> dict[str, Any]:
