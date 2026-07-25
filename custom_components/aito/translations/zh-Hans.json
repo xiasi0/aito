@@ -26,10 +26,23 @@
   "abort": {
     "reauth_successful": "AITO 认证信息已更新。"
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "AITO 选项",
+        "data": {
+          "scan_interval": "轮询间隔（秒）"
+        }
+      }
+    }
+  },
   "entity": {
     "sensor": {
       "raw_vehicle_status": {
         "name": "原始车辆状态"
+      },
+      "battery_soc": {
+        "name": "电池电量"
       }
     }
   }

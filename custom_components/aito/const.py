@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, Mapping
+
 DOMAIN = "aito"
 PLATFORMS: tuple[str, ...] = ("sensor",)
 
@@ -25,6 +27,10 @@ CONF_ENCRYPTED_SESSION_CONTEXT = "encrypted_session_context"
 CONF_VEHICLES = "vehicles"
 CONF_VEHICLE_RESOURCES = "vehicle_resources"
 CONF_RAW_STATUS_SNAPSHOT_CREATED = "raw_status_snapshot_created"
+CONF_SCAN_INTERVAL = "scan_interval"
+
+DEFAULT_SCAN_INTERVAL_SECONDS = 30
+MIN_SCAN_INTERVAL_SECONDS = 10
 
 AITO_CLIENT_ID = "104872091"
 
@@ -37,3 +43,11 @@ DEFAULT_APIG_CLIENT_VERSION = "HUAWEI_IVCS_APP_3.002.300"
 DEFAULT_USER_AGENT = "XCar-APP-iOS/3.0.2.300 (iPhone; iOS 15.8.8; Scale/2.0)"
 DEFAULT_PACKAGE_NAME = "app.huawei.auto"
 DEFAULT_VEHICLE_EC = "SERES"
+
+
+def scan_interval_seconds(options: Mapping[str, Any] | None) -> int:
+    try:
+        seconds = int((options or {}).get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_SECONDS))
+    except (TypeError, ValueError):
+        return DEFAULT_SCAN_INTERVAL_SECONDS
+    return max(MIN_SCAN_INTERVAL_SECONDS, seconds)

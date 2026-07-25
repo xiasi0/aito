@@ -26,10 +26,23 @@
   "abort": {
     "reauth_successful": "AITO authentication was updated successfully."
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "AITO Options",
+        "data": {
+          "scan_interval": "Polling interval (seconds)"
+        }
+      }
+    }
+  },
   "entity": {
     "sensor": {
       "raw_vehicle_status": {
         "name": "Raw vehicle status"
+      },
+      "battery_soc": {
+        "name": "Battery"
       }
     }
   }

@@ -37,6 +37,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_VEHICLES,
         DOMAIN,
     )
+    from .api import AitoApiClient
+    from .coordinator import AitoDataCoordinator
+    from .devices import vehicle_spec_for
     from .resources import remove_vehicle_resources
     from .storage import AitoAssetStore, AitoDeviceIdentityStore, asset_key_from_login_data
 
@@ -90,6 +93,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _raise_setup_auth_failed("AITO vehicle list is empty")
 
     vehicles = [vehicle for item in vehicle_items for vehicle in (Vehicle.from_api(item),) if vehicle.id]
+    vehicle_specs = {
+        vehicle.id: spec
+        for vehicle in vehicles
+        for spec in (vehicle_spec_for(vehicle),)
+        if spec is not None
+    }
     raw_status_snapshots: dict[str, dict[str, Any]] = {}
     if not assets.get(CONF_RAW_STATUS_SNAPSHOT_CREATED):
         raw_status_snapshots = await _async_capture_raw_status_snapshots(hass, assets, identity, vehicles)
@@ -98,18 +107,49 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             assets_dirty = True
     if assets_dirty and asset_store is not None:
         await asset_store.async_save(assets)
-    _remove_legacy_entities(hass, entry, vehicles)
+    client = AitoApiClient(
+        apig_authorization=str(assets[CONF_APIG_AUTHORIZATION]),
+        ivcs_device_id=_identity_value(identity, CONF_IVCS_DEVICE_ID) or assets.get(CONF_IVCS_DEVICE_ID),
+        omp_cookies=_saved_session_context(assets, identity).get("omp_cookies"),
+        apig_verify_ssl=False,
+    )
+    coordinator = None
+    if vehicle_specs:
+        coordinator = AitoDataCoordinator(
+            hass,
+            entry,
+            client,
+            vehicles,
+            vehicle_specs,
+            assets=assets,
+            asset_store=asset_store,
+            identity=identity,
+            identity_store=identity_store,
+        )
+        initial_data = {
+            vehicle_id: snapshot
+            for vehicle_id, snapshot in raw_status_snapshots.items()
+            if vehicle_id in vehicle_specs
+        }
+        if initial_data:
+            coordinator.async_set_updated_data(initial_data)
+        else:
+            await coordinator.async_config_entry_first_refresh()
+    _remove_legacy_entities(hass, entry, vehicles, vehicle_specs)
     _register_vehicle_devices(hass, entry, vehicles)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "assets": assets,
         "identity": identity,
-        "raw_status_sensor_loaded": bool(assets.get(CONF_RAW_STATUS_SNAPSHOT_CREATED)),
+        "coordinator": coordinator,
+        "raw_status_sensor_loaded": bool(assets.get(CONF_RAW_STATUS_SNAPSHOT_CREATED) or vehicle_specs),
         "raw_status_snapshots": raw_status_snapshots,
         "vehicles": vehicles,
+        "vehicle_specs": vehicle_specs,
     }
-    if assets.get(CONF_RAW_STATUS_SNAPSHOT_CREATED):
+    if assets.get(CONF_RAW_STATUS_SNAPSHOT_CREATED) or vehicle_specs:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
 
@@ -121,6 +161,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     return unload_ok
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -160,14 +204,24 @@ def _register_vehicle_devices(hass: HomeAssistant, entry: ConfigEntry, vehicles:
         )
 
 
-def _remove_legacy_entities(hass: HomeAssistant, entry: ConfigEntry, vehicles: list[Vehicle]) -> None:
+def _remove_legacy_entities(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    vehicles: list[Vehicle],
+    vehicle_specs: dict[str, Any],
+) -> None:
     """Remove entities created by versions that exposed live vehicle state."""
     from homeassistant.helpers import entity_registry as er
 
     registry = er.async_get(hass)
     raw_status_unique_ids = {f"{vehicle.id}_raw_vehicle_status" for vehicle in vehicles}
+    mapped_unique_ids = {
+        f"{vehicle_id}_{sensor.key}"
+        for vehicle_id, spec in vehicle_specs.items()
+        for sensor in spec.sensors
+    }
     for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
-        if entity.unique_id not in raw_status_unique_ids:
+        if entity.unique_id not in raw_status_unique_ids | mapped_unique_ids:
             registry.async_remove(entity.entity_id)
 
 
