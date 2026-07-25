@@ -43,6 +43,9 @@
       },
       "battery_soc": {
         "name": "电池电量"
+      },
+      "wltc_remaining_mileage": {
+        "name": "WLTC 剩余里程"
       }
     }
   }

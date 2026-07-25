@@ -43,6 +43,9 @@
       },
       "battery_soc": {
         "name": "Battery"
+      },
+      "wltc_remaining_mileage": {
+        "name": "WLTC remaining range"
       }
     }
   }

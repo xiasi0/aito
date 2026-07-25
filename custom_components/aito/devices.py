@@ -47,6 +47,21 @@ DEVICES: tuple[VehicleSpec, ...] = (
             ),
         ),
     ),
+    VehicleSpec(
+        key="seres_x1",
+        enterprise_code="SERES",
+        project_code="SERES-X1",
+        sensors=(
+            SensorSpec(
+                key="wltc_remaining_mileage",
+                path=("vehicleStatus", "wltcRemainingMileage"),
+                translation_key="wltc_remaining_mileage",
+                device_class="distance",
+                native_unit_of_measurement="km",
+                state_class="measurement",
+            ),
+        ),
+    ),
 )
 
 
