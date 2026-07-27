@@ -28,7 +28,6 @@ Transport = Callable[[str, str, dict[str, str], bytes | None, float], tuple[int,
 
 DEFAULT_DYNAMIC_INFO_SECTIONS: JSON = {
     "vehicleStatus": 0,
-    "location": 0,
     "door": 0,
     "window": 0,
     "tire": 0,
