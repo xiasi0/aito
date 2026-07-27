@@ -60,6 +60,10 @@ class AitoApiError(RuntimeError):
 class AitoCommandError(RuntimeError):
     """A vehicle command was rejected or did not finish in time."""
 
+    def __init__(self, message: str, *, result_code: Any = None) -> None:
+        super().__init__(message)
+        self.result_code = result_code
+
 
 class AitoApiClient:
     def __init__(
@@ -387,7 +391,10 @@ class AitoApiClient:
             if result_code in {0, "0"}:
                 return
             if result_code not in {-100, "-100"}:
-                raise AitoCommandError(f"AITO vehicle command failed with resultCode={result_code!r}")
+                raise AitoCommandError(
+                    f"AITO vehicle command failed with resultCode={result_code!r}",
+                    result_code=result_code,
+                )
             if time.monotonic() >= deadline:
                 raise AitoCommandError("AITO vehicle command timed out")
             time.sleep(0.5)

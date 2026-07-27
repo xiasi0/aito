@@ -137,6 +137,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await coordinator.async_config_entry_first_refresh()
     _remove_legacy_entities(hass, entry, vehicles, vehicle_specs)
     _register_vehicle_devices(hass, entry, vehicles)
+    await _async_extract_car_images(hass, assets, vehicles)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "assets": assets,
@@ -202,6 +203,44 @@ def _register_vehicle_devices(hass: HomeAssistant, entry: ConfigEntry, vehicles:
             model=info.get("model"),
             sw_version=info.get("sw_version"),
         )
+
+
+async def _async_extract_car_images(hass: HomeAssistant, assets: Any, vehicles: list[Vehicle]) -> None:
+    """Extract each vehicle's body render from its resource archive into /www.
+
+    Writes www/aito/<vehicle_id>.png plus a stable www/aito/car.png alias for
+    the first vehicle (served at /local/aito/...), so the Lovelace card can show
+    the official picture without a bundled asset.
+    """
+    import os
+    import shutil
+
+    from .const import DOMAIN
+    from .resources import AitoResourceError, extract_car_image
+
+    resources = assets.get("vehicle_resources") if isinstance(assets, dict) else None
+    if not isinstance(resources, dict):
+        return
+    account_dir = hass.config.path(".storage", DOMAIN, "resources", str(assets.get(CONF_PHONE) or ""))
+    www_dir = hass.config.path("www", DOMAIN)
+    default_alias = os.path.join(www_dir, "car.png")
+    for index, vehicle in enumerate(vehicles):
+        manifest = resources.get(vehicle.id)
+        archive_rel = manifest.get("archive") if isinstance(manifest, dict) else None
+        if not archive_rel:
+            continue
+        archive = os.path.join(account_dir, archive_rel)
+        destination = os.path.join(www_dir, f"{vehicle.id}.png")
+        try:
+            if not os.path.isfile(destination):
+                written = await hass.async_add_executor_job(extract_car_image, archive, destination)
+                if written:
+                    _LOGGER.info("AITO extracted car image to %s", destination)
+            # The card references a fixed name; keep it pointed at the first vehicle.
+            if index == 0 and os.path.isfile(destination) and not os.path.isfile(default_alias):
+                await hass.async_add_executor_job(shutil.copyfile, destination, default_alias)
+        except (AitoResourceError, OSError):
+            _LOGGER.warning("AITO could not extract car image for vehicle %s", vehicle.id, exc_info=True)
 
 
 def _remove_legacy_entities(

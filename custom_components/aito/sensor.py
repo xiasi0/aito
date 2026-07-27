@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.components.sensor import (
+    RestoreSensor,
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.const import EntityCategory
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -20,6 +25,12 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
         AitoRawVehicleStatusSensor(vehicle, snapshots.get(vehicle.id))
         for vehicle in data["vehicles"]
     ]
+    for index, vehicle in enumerate(data["vehicles"]):
+        # Fix the first vehicle's model sensor id so the Lovelace card can
+        # reference it directly for its title.
+        entities.append(
+            AitoVehicleModelSensor(vehicle, "sensor.aito_model" if index == 0 else None)
+        )
     coordinator = data.get("coordinator")
     if coordinator is not None:
         for vehicle in data["vehicles"]:
@@ -27,6 +38,21 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
             if spec is not None:
                 entities.extend(AitoMappedSensor(coordinator, vehicle, sensor) for sensor in spec.sensors)
     async_add_entities(entities)
+
+
+class AitoVehicleModelSensor(SensorEntity):
+    """The vehicle's model name, reported once from the login vehicle list."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_translation_key = "model"
+
+    def __init__(self, vehicle: Vehicle, fixed_entity_id: str | None = None) -> None:
+        self._attr_unique_id = f"{vehicle.id}_model"
+        self._attr_device_info = vehicle_device_info(vehicle)
+        self._attr_native_value = vehicle.model or vehicle.name
+        if fixed_entity_id:
+            self.entity_id = fixed_entity_id
 
 
 class AitoRawVehicleStatusSensor(RestoreEntity, SensorEntity):
@@ -61,7 +87,7 @@ class AitoRawVehicleStatusSensor(RestoreEntity, SensorEntity):
         self._attr_extra_state_attributes = snapshot
 
 
-class AitoMappedSensor(CoordinatorEntity[AitoDataCoordinator], SensorEntity):
+class AitoMappedSensor(CoordinatorEntity[AitoDataCoordinator], RestoreSensor):
     """A sensor explicitly declared for a matching vehicle project."""
 
     _attr_has_entity_name = True
@@ -73,6 +99,7 @@ class AitoMappedSensor(CoordinatorEntity[AitoDataCoordinator], SensorEntity):
         self._attr_unique_id = f"{vehicle.id}_{spec.key}"
         self._attr_device_info = vehicle_device_info(vehicle)
         self._attr_translation_key = spec.translation_key
+        self._last_value: Any = None
         if spec.device_class:
             self._attr_device_class = SensorDeviceClass(spec.device_class)
         if spec.native_unit_of_measurement:
@@ -80,7 +107,22 @@ class AitoMappedSensor(CoordinatorEntity[AitoDataCoordinator], SensorEntity):
         if spec.state_class:
             self._attr_state_class = SensorStateClass(spec.state_class)
 
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if not self._spec.sticky:
+            return
+        if (last := await self.async_get_last_sensor_data()) is not None and last.native_value is not None:
+            self._last_value = last.native_value
+
     @property
     def native_value(self):
         data = self.coordinator.data.get(self._vehicle_id, {}) if self.coordinator.data else {}
-        return sensor_value(data, self._spec)
+        value = sensor_value(data, self._spec)
+        if value is not None:
+            self._last_value = value
+            return value
+        # A sticky sensor keeps its previous reading when the vehicle stops
+        # reporting (e.g. tire pressure while asleep) instead of going unknown.
+        if self._spec.sticky:
+            return self._last_value
+        return value
