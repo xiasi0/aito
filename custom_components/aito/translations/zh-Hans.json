@@ -85,6 +85,20 @@
       "sentry_mode": {
         "name": "哨兵模式"
       }
+    },
+    "climate": {
+      "air_conditioner": {
+        "name": "空调",
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "rapid_cool": "速冷",
+              "rapid_heat": "速热",
+              "defrost": "除霜"
+            }
+          }
+        }
+      }
     }
   }
 }

@@ -85,6 +85,20 @@
       "sentry_mode": {
         "name": "Sentry mode"
       }
+    },
+    "climate": {
+      "air_conditioner": {
+        "name": "Air conditioner",
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "rapid_cool": "Rapid cool",
+              "rapid_heat": "Rapid heat",
+              "defrost": "Defrost"
+            }
+          }
+        }
+      }
     }
   }
 }

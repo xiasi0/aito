@@ -264,6 +264,8 @@ class AitoApiClient:
         target_temp: int | None = None,
     ) -> None:
         """Run the observed A/C command and wait for its asynchronous result."""
+        if enabled and target_temp is None:
+            raise ValueError("AITO air-conditioner requires targetTemp when enabling")
         query = {"enabled": str(enabled).lower()}
         if target_temp is not None:
             query["targetTemp"] = str(target_temp)

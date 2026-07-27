@@ -116,6 +116,47 @@ class AitoDataCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         )
         await self.async_request_refresh()
 
+    async def async_control_air_conditioner(
+        self,
+        vehicle_id: str,
+        *,
+        enabled: bool,
+        target_temp: int | None = None,
+    ) -> None:
+        await self._async_control_command(
+            partial(
+                self.client.control_air_conditioner,
+                vehicle_id,
+                enabled=enabled,
+                target_temp=target_temp,
+            )
+        )
+
+    async def async_control_air_conditioner_rapid(
+        self,
+        vehicle_id: str,
+        *,
+        enabled: bool,
+        mode: int,
+    ) -> None:
+        await self._async_control_command(
+            partial(
+                self.client.control_air_conditioner_rapid,
+                vehicle_id,
+                enabled=enabled,
+                mode=mode,
+            )
+        )
+
+    async def async_control_defrost(self, vehicle_id: str, *, enabled: bool) -> None:
+        await self._async_control_command(
+            partial(self.client.control_defrost, vehicle_id, enabled=enabled)
+        )
+
+    async def _async_control_command(self, request) -> None:
+        await self._async_apig_request(request, retry_after_refresh=False)
+        await self.async_request_refresh()
+
     async def _async_latest_energy_report(self, vehicle_id: str) -> dict[str, Any] | None:
         now = time.monotonic()
         if now < self._energy_report_refresh_at.get(vehicle_id, 0):
