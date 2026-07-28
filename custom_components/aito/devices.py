@@ -113,16 +113,11 @@ def _parking_text(value: Any) -> str | None:
         return None
 
 
-DEVICES: tuple[VehicleSpec, ...] = (
-    VehicleSpec(
-        key="seres_f3",
-        enterprise_code="SERES",
-        project_code="SERES-F3",
-        supports_now_departure_plan=True,
-        supports_sentry_mode=True,
-        supports_air_conditioner=True,
-        supports_location=True,
-        sensors=(
+# 两个车型的传感器定义原本逐字重复。这些字段都来自同一套 dynamic-infos
+# section（charge / fuel / vehicleStatus / hvac / tire），与具体车型无关，
+# 所以抽成公共表；车型之间真正的差异只在下面的 supports_* 能力开关。
+# 某个车型不上报的字段会是 unknown（sticky 传感器则保留上次真值）。
+_COMMON_SENSORS: tuple[SensorSpec, ...] = (
             SensorSpec(
                 key="battery_soc",
                 path=("charge", "soc"),
@@ -334,7 +329,19 @@ DEVICES: tuple[VehicleSpec, ...] = (
                 converter=_positive_number,
                 sticky=True,
             ),
-        ),
+)
+
+
+DEVICES: tuple[VehicleSpec, ...] = (
+    VehicleSpec(
+        key="seres_f3",
+        enterprise_code="SERES",
+        project_code="SERES-F3",
+        supports_now_departure_plan=True,
+        supports_sentry_mode=True,
+        supports_air_conditioner=True,
+        supports_location=True,
+        sensors=_COMMON_SENSORS,
     ),
     VehicleSpec(
         key="seres_x1",
@@ -343,123 +350,7 @@ DEVICES: tuple[VehicleSpec, ...] = (
         supports_sentry_mode=True,
         supports_air_conditioner=True,
         supports_location=True,
-        sensors=(
-            SensorSpec(
-                key="battery_soc",
-                path=("charge", "soc"),
-                translation_key="battery_soc",
-                device_class="battery",
-                native_unit_of_measurement="%",
-                state_class="measurement",
-                converter=_reject_sentinel,
-                sticky=True,
-            ),
-            SensorSpec(
-                key="charge_voltage",
-                path=("charge", "chargeVoltage"),
-                translation_key="charge_voltage",
-                device_class="voltage",
-                native_unit_of_measurement="V",
-                state_class="measurement",
-                converter=_absolute_number,
-                sticky=True,
-            ),
-            SensorSpec(
-                key="charge_current",
-                path=("charge", "chargeCurrent"),
-                translation_key="charge_current",
-                device_class="current",
-                native_unit_of_measurement="A",
-                state_class="measurement",
-                converter=_absolute_number,
-                sticky=True,
-            ),
-            SensorSpec(
-                key="charge_power",
-                path=("charge",),
-                translation_key="charge_power",
-                device_class="power",
-                native_unit_of_measurement="kW",
-                state_class="measurement",
-                value_getter=_charge_power_kw,
-                sticky=True,
-            ),
-            SensorSpec(
-                key="remaining_charge_time",
-                path=("charge", "remainChargeTime"),
-                translation_key="remaining_charge_time",
-                device_class="duration",
-                native_unit_of_measurement="min",
-                state_class="measurement",
-                converter=_reject_sentinel,
-                sticky=True,
-            ),
-            SensorSpec(
-                key="electric_wltc_remaining_mileage",
-                path=("charge", "vcuWltcRemainingMileage"),
-                translation_key="electric_wltc_remaining_mileage",
-                device_class="distance",
-                native_unit_of_measurement="km",
-                state_class="measurement",
-                converter=_reject_sentinel,
-                sticky=True,
-            ),
-            SensorSpec(
-                key="wltc_remaining_mileage",
-                path=("vehicleStatus", "wltcRemainingMileage"),
-                translation_key="wltc_remaining_mileage",
-                device_class="distance",
-                native_unit_of_measurement="km",
-                state_class="measurement",
-                converter=_reject_sentinel,
-                sticky=True,
-            ),
-            SensorSpec(
-                key="total_mileage",
-                path=("vehicleStatus", "totalMileage"),
-                translation_key="total_mileage",
-                device_class="distance",
-                native_unit_of_measurement="km",
-                state_class="total_increasing",
-                converter=_reject_sentinel,
-                sticky=True,
-            ),
-            SensorSpec(
-                key="fuel_wltc_remaining_mileage",
-                path=("fuel", "fuelWltcRemainingMileage"),
-                translation_key="fuel_wltc_remaining_mileage",
-                device_class="distance",
-                native_unit_of_measurement="km",
-                state_class="measurement",
-                converter=_reject_sentinel,
-                sticky=True,
-            ),
-            SensorSpec(
-                key="fuel_remaining",
-                path=("fuel", "leftPercent"),
-                translation_key="fuel_remaining",
-                native_unit_of_measurement="%",
-                state_class="measurement",
-                converter=_reject_sentinel,
-                sticky=True,
-            ),
-            SensorSpec(
-                key="average_power_consumption",
-                path=("energyReport", "total", "avgPowerConsum"),
-                translation_key="average_power_consumption",
-                source="energy_report",
-                native_unit_of_measurement="kWh/100km",
-                state_class="measurement",
-            ),
-            SensorSpec(
-                key="average_fuel_consumption",
-                path=("energyReport", "total", "avgFuelConsum"),
-                translation_key="average_fuel_consumption",
-                source="energy_report",
-                native_unit_of_measurement="L/100km",
-                state_class="measurement",
-            ),
-        ),
+        sensors=_COMMON_SENSORS,
     ),
 )
 
