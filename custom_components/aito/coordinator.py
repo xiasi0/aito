@@ -93,6 +93,16 @@ class AitoDataCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
                 continue
             raw = await self._async_dynamic_infos(vehicle.id, dynamic_sections(spec))
             data = raw if isinstance(raw, dict) else {}
+            # While the vehicle sleeps (connectStatus=0) it stops reporting live
+            # data and the API returns placeholder values (cabin temp 20.0C, A/C
+            # temp 6553.5C, etc. — plausible-looking but fake). Keep the previous
+            # frame so they don't overwrite real values. Do NOT substitute an
+            # empty frame when there is no previous data: that would make the
+            # departure-plan / sentry / A/C entities unavailable and block the
+            # controls, exactly when the user needs to send a wake/command.
+            previous = (self.data or {}).get(vehicle.id)
+            if _is_vehicle_offline(data) and isinstance(previous, dict) and previous:
+                data = previous
             if has_energy_report_sensors(spec):
                 report = await self._async_latest_energy_report(vehicle.id)
                 if report is not None:
@@ -524,6 +534,16 @@ def _session_huawei_cookies(context: dict[str, Any]) -> dict[str, str]:
         for name, value in cookies.items()
         if isinstance(name, str) and isinstance(value, str) and name and value
     }
+
+
+def _is_vehicle_offline(data: dict[str, Any]) -> bool:
+    """The vehicle is asleep/offline when vehicleStatus.connectStatus is 0.
+
+    While offline it stops reporting live data and the API returns placeholder
+    values, so callers should keep the last known data instead.
+    """
+    vehicle_status = data.get("vehicleStatus") if isinstance(data, dict) else None
+    return isinstance(vehicle_status, dict) and vehicle_status.get("connectStatus") == 0
 
 
 def _is_cancelled_apig_token(error: AitoApiError) -> bool:
