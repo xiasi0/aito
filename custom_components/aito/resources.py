@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import zipfile
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
@@ -11,9 +13,142 @@ from .const import DEFAULT_USER_AGENT
 
 ResourceDownloader = Callable[[str, Path], None]
 
+# The interactive car model ships as layered PNGs; this one is the full body
+# render used as the background of the App's vehicle view.
+_CAR_IMAGE_PREFERRED = "carmodel/12_skeleton/background.png"
+_CAR_IMAGE_SEARCH_PREFIX = "carmodel/"
+
 
 class AitoResourceError(RuntimeError):
     pass
+
+
+# The car model is layered PNGs; the skeleton alone is a doorless shell. The
+# App rebuilds the full car by stacking each part over it. Each door/window is
+# a bodymovin animation whose CLOSED state is the LAST frame of its
+# *__open_to_close group (the *__close_to_open first frame is not fully shut and
+# leaves a black gap). Paint order (bottom to top): doors, windows, windshield,
+# trunk/charging-cap. The left-front door is painted once more on top, because
+# the window layers' black edges otherwise cover its trailing edge and leave a
+# thick black seam at the B-pillar. The lamp layer is intentionally omitted so
+# the daytime running lights are not lit.
+_CAR_COMPOSITE_GROUPS = (
+    "carmodel/06_left_front_door_close__open_to_close",
+    "carmodel/07_right_front_door_close__open_to_close",
+    "carmodel/08_left_rear_door_close__open_to_close",
+    "carmodel/09_right_rear_door_close__open_to_close",
+    "carmodel/02_left_front_window__open_to_close",
+    "carmodel/03_left_rear_window__open_to_close",
+    "carmodel/04_right_front_window__open_to_close",
+    "carmodel/05_right_rear_window__open_to_close",
+)
+_CAR_COMPOSITE_LATE = (
+    "carmodel/10_trunk__open_to_close",
+    "carmodel/11_charging_port_cap_open_to_close",
+)
+_CAR_COMPOSITE_WINDSHIELD = "carmodel/01_0_windshield/background.png"
+_CAR_COMPOSITE_TOP_GROUP = "carmodel/06_left_front_door_close__open_to_close"
+
+
+def _closed_frame(names: set[str], group: str) -> str | None:
+    """Return the fully-closed frame of an animation group (its last frame).
+
+    Frames are named a__0-20_.png (frame 0) then a__0-20__0.png .. __N.png, so
+    pick the highest numeric index rather than trusting string order.
+    """
+    prefix = f"{group}/images/"
+    frames = [n for n in names if n.startswith(prefix) and n.lower().endswith(".png")]
+    if not frames:
+        return None
+
+    def index(name: str) -> int:
+        leaf = name.rsplit("/", 1)[1]
+        if leaf == "a__0-20_.png":
+            return 0
+        match = re.search(r"__(\d+)\.png$", leaf)
+        return int(match.group(1)) + 1 if match else -1
+
+    return max(frames, key=index)
+
+
+def _compose_full_car(bundle: zipfile.ZipFile) -> bytes | None:
+    """Rebuild the all-closed car view by alpha-stacking the model layers.
+
+    All layers are same-size full-canvas PNGs, so a plain composite works.
+    Returns encoded PNG bytes, or None when Pillow is missing or the archive
+    lacks the skeleton layer (the caller then falls back to a single PNG).
+    """
+    try:
+        import io
+
+        from PIL import Image
+    except Exception:
+        return None
+    names = set(bundle.namelist())
+
+    def load(path: str | None):
+        if not path or path not in names:
+            return None
+        try:
+            return Image.open(io.BytesIO(bundle.read(path))).convert("RGBA")
+        except Exception:
+            return None
+
+    base = load(_CAR_IMAGE_PREFERRED)
+    if base is None:
+        return None
+
+    def stack(image, layer):
+        return Image.alpha_composite(image, layer) if layer is not None and layer.size == image.size else image
+
+    for group in _CAR_COMPOSITE_GROUPS:
+        base = stack(base, load(_closed_frame(names, group)))
+    base = stack(base, load(_CAR_COMPOSITE_WINDSHIELD))
+    for group in _CAR_COMPOSITE_LATE:
+        base = stack(base, load(_closed_frame(names, group)))
+    # Left-front door on top, over the window layers, to hide the B-pillar seam.
+    base = stack(base, load(_closed_frame(names, _CAR_COMPOSITE_TOP_GROUP)))
+    buffer = io.BytesIO()
+    base.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def extract_car_image(archive: str | Path, destination: str | Path) -> bool:
+    """Write the full (all-closed) car render out of a downloaded archive.
+
+    Composites the layered model into a complete car; if Pillow is unavailable
+    or the layout is unexpected, falls back to the skeleton background or the
+    largest PNG under carmodel/, so a new vehicle model still gets a picture.
+    """
+    archive = Path(archive)
+    destination = Path(destination)
+    if not archive.is_file():
+        return False
+    try:
+        with zipfile.ZipFile(archive) as bundle:
+            payload = _compose_full_car(bundle)
+            if payload is None:
+                names = bundle.namelist()
+                chosen = _CAR_IMAGE_PREFERRED if _CAR_IMAGE_PREFERRED in names else None
+                if chosen is None:
+                    pngs = [
+                        name
+                        for name in names
+                        if name.startswith(_CAR_IMAGE_SEARCH_PREFIX) and name.lower().endswith(".png")
+                    ]
+                    if not pngs:
+                        return False
+                    chosen = max(pngs, key=lambda name: bundle.getinfo(name).file_size)
+                payload = bundle.read(chosen)
+    except (zipfile.BadZipFile, OSError) as error:
+        raise AitoResourceError("could not read vehicle resource archive") from error
+    if not payload:
+        return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    temporary.write_bytes(payload)
+    os.replace(temporary, destination)
+    return True
 
 
 def cache_vehicle_resources(
