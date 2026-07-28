@@ -9,6 +9,7 @@
 const PREP_SWITCH = 'switch.aito_prep_car';
 const SENTRY_SWITCH = 'switch.aito_sentry';
 const PENDING_TIMEOUT_MS = 30000;
+// 第一个控制键：有备车能力(M8)就是备车开关，没有(M5)就退化为空调开关。
 // 车图由集成合成到 /local/aito/car.png。带版本号 bust 浏览器强缓存——
 // 集成重新合成车图后，把这个值改一下即可让所有客户端重新拉图。
 const CAR_IMAGE_URL = '/local/aito/car.png?v=2';
@@ -143,7 +144,14 @@ class AitoCard extends HTMLElement {
           padding: 8px 4px;
           display: flex; flex-direction: column;
           align-items: center; text-align: center; gap: 2px;
+          cursor: pointer;
+          transition: transform 0.1s, background 0.15s;
+          -webkit-tap-highlight-color: transparent;
         }
+        .cell:hover { background: var(--divider-color); }
+        .cell:active { transform: scale(0.95); }
+        .footer span[data-entity] { cursor: pointer; }
+        .footer span[data-entity]:hover { color: var(--primary-text-color); }
         .cell-val { font-size: 0.82em; font-weight: 600; white-space: nowrap; }
         .cell-label { font-size: 0.62em; color: var(--secondary-text-color); }
 
@@ -178,10 +186,10 @@ class AitoCard extends HTMLElement {
         <div class="ctrl-grid">
           <div class="ctrl-cell">
             <span class="ctrl-text">
-              <span class="ctrl-name">🚗 备车</span>
+              <span class="ctrl-name" id="prep-name">🚗 备车</span>
               <span class="ctrl-state" id="prep-state"></span>
             </span>
-            <button class="switch" id="prep-sw" role="switch" aria-label="立即备车">
+            <button class="switch" id="prep-sw" role="switch" aria-label="立即备车/空调">
               <span class="knob"></span>
             </button>
           </div>
@@ -197,29 +205,94 @@ class AitoCard extends HTMLElement {
         </div>
 
         <div class="grid">
-          <div class="cell"><div class="cell-val" id="sum-range"></div><div class="cell-label">综合续航</div></div>
-          <div class="cell"><div class="cell-val" id="inside"></div><div class="cell-label">车内</div></div>
-          <div class="cell"><div class="cell-val" id="ac"></div><div class="cell-label">空调</div></div>
-          <div class="cell"><div class="cell-val" id="status"></div><div class="cell-label">状态</div></div>
+          <div class="cell" data-entity="sensor.aito_sum_range"><div class="cell-val" id="sum-range"></div><div class="cell-label">综合续航</div></div>
+          <div class="cell" data-entity="sensor.aito_inside_temp"><div class="cell-val" id="inside"></div><div class="cell-label">车内</div></div>
+          <div class="cell" data-entity="climate"><div class="cell-val" id="ac"></div><div class="cell-label">空调</div></div>
+          <div class="cell" data-entity="sensor.aito_parking"><div class="cell-val" id="status"></div><div class="cell-label">状态</div></div>
         </div>
 
         <div class="grid">
-          <div class="cell"><div class="cell-val" id="tire-fl"></div><div class="cell-label">左前</div></div>
-          <div class="cell"><div class="cell-val" id="tire-fr"></div><div class="cell-label">右前</div></div>
-          <div class="cell"><div class="cell-val" id="tire-rl"></div><div class="cell-label">左后</div></div>
-          <div class="cell"><div class="cell-val" id="tire-rr"></div><div class="cell-label">右后</div></div>
+          <div class="cell" data-entity="sensor.aito_tire_fl"><div class="cell-val" id="tire-fl"></div><div class="cell-label">左前</div></div>
+          <div class="cell" data-entity="sensor.aito_tire_fr"><div class="cell-val" id="tire-fr"></div><div class="cell-label">右前</div></div>
+          <div class="cell" data-entity="sensor.aito_tire_rl"><div class="cell-val" id="tire-rl"></div><div class="cell-label">左后</div></div>
+          <div class="cell" data-entity="sensor.aito_tire_rr"><div class="cell-val" id="tire-rr"></div><div class="cell-label">右后</div></div>
         </div>
 
         <div class="footer">
-          <span id="updated"></span>
-          <span id="odo"></span>
+          <span data-entity="sensor.aito_updated_at" id="updated"></span>
+          <span data-entity="sensor.aito_odometer" id="odo"></span>
         </div>
       </div>
     `;
 
     this._$ = (id) => this.shadowRoot.getElementById(id);
-    this._$('prep-sw').addEventListener('click', () => this._toggle(PREP_SWITCH));
+    this._$('prep-sw').addEventListener('click', () => this._togglePrimary());
     this._$('sentry-sw').addEventListener('click', () => this._toggle(SENTRY_SWITCH));
+    // 每个状态格点击打开对应实体的详情弹窗（空调格动态解析到 climate 实体）
+    this.shadowRoot.querySelectorAll('[data-entity]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const id = el.dataset.entity === 'climate' ? this._climateId() : el.dataset.entity;
+        this._moreInfo(id);
+      });
+    });
+  }
+
+  // 派发 HA 标准的 more-info 事件，打开实体详情（数值型带历史图表，climate 是控制界面）
+  _moreInfo(entityId) {
+    if (!entityId || !this._hass?.states[entityId]) return;
+    this.dispatchEvent(
+      new CustomEvent('hass-more-info', { detail: { entityId }, bubbles: true, composed: true }),
+    );
+  }
+
+  // 定位本车的 aito 空调 climate 实体：优先固定 id，回退按 rapid_cool preset 扫描
+  _climateId() {
+    const s = this._hass?.states || {};
+    if (s['climate.aito_ac']) return 'climate.aito_ac';
+    return Object.keys(s).find(
+      (id) =>
+        id.startsWith('climate.') &&
+        Array.isArray(s[id].attributes?.preset_modes) &&
+        s[id].attributes.preset_modes.includes('rapid_cool'),
+    );
+  }
+
+  // 第一个控制键的当前配置：优先备车，其次空调
+  _primary() {
+    if (this._hass?.states[PREP_SWITCH]) {
+      return { entity: PREP_SWITCH, domain: 'switch', name: '🚗 备车' };
+    }
+    const climate = this._climateId();
+    if (climate) {
+      return { entity: climate, domain: 'climate', name: '❄️ 空调' };
+    }
+    return null;
+  }
+
+  _isOn(p) {
+    const state = this._state(p.entity);
+    return p.domain === 'climate' ? state !== 'off' && this._known(p, state) : state === 'on';
+  }
+
+  _known(p, state) {
+    return p.domain === 'climate'
+      ? state !== '--' && state !== 'unavailable' && state !== 'unknown'
+      : state === 'on' || state === 'off';
+  }
+
+  _togglePrimary() {
+    const p = this._primary();
+    if (!p || !this._known(p, this._state(p.entity))) return;
+    const target = this._isOn(p) ? 'off' : 'on';
+    this._pending[p.entity] = { target, since: Date.now() };
+    this._update();
+    this._hass?.callService(p.domain, target === 'on' ? 'turn_on' : 'turn_off', { entity_id: p.entity });
+    setTimeout(() => {
+      if (this._pending[p.entity]) {
+        delete this._pending[p.entity];
+        this._update();
+      }
+    }, PENDING_TIMEOUT_MS);
   }
 
   _toggle(entity) {
@@ -236,6 +309,37 @@ class AitoCard extends HTMLElement {
         this._update();
       }
     }, PENDING_TIMEOUT_MS);
+  }
+
+  // 第一个控制键的状态渲染（备车走 switch 语义，空调走 climate 开/关语义）
+  _updatePrimary() {
+    const p = this._primary();
+    const sw = this._$('prep-sw');
+    const nameEl = this._$('prep-name');
+    const label = this._$('prep-state');
+    if (!p) {
+      nameEl.textContent = '🚗 备车';
+      sw.classList.remove('on', 'pending');
+      sw.classList.add('unavailable');
+      label.textContent = '不可用';
+      label.classList.remove('on');
+      return;
+    }
+    nameEl.textContent = p.name;
+    const state = this._state(p.entity);
+    const pending = this._pending[p.entity];
+    if (pending && (this._isOn(p) === (pending.target === 'on') || Date.now() - pending.since > PENDING_TIMEOUT_MS)) {
+      delete this._pending[p.entity];
+    }
+    const stillPending = Boolean(this._pending[p.entity]);
+    const on = stillPending ? this._pending[p.entity].target === 'on' : this._isOn(p);
+    const usable = this._known(p, state);
+    sw.classList.toggle('on', on);
+    sw.classList.toggle('pending', stillPending);
+    sw.classList.toggle('unavailable', !usable && !stillPending);
+    sw.setAttribute('aria-checked', String(on));
+    label.textContent = stillPending ? '下发中…' : usable ? (on ? '已开启' : '已关闭') : '不可用';
+    label.classList.toggle('on', on && !stillPending);
   }
 
   _updateSwitch(entity, swId, stateId) {
@@ -286,7 +390,7 @@ class AitoCard extends HTMLElement {
     bar.style.width = `${socN}%`;
     bar.style.background = socN > 60 ? '#4ade80' : socN > 30 ? '#facc15' : '#f87171';
 
-    this._updateSwitch(PREP_SWITCH, 'prep-sw', 'prep-state');
+    this._updatePrimary();
     this._updateSwitch(SENTRY_SWITCH, 'sentry-sw', 'sentry-state');
 
     this._$('sum-range').textContent = `🛣️ ${int(this._state('sensor.aito_sum_range'))} km`;
