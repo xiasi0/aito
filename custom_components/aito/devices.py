@@ -28,6 +28,7 @@ class VehicleSpec:
     supports_now_departure_plan: bool = False
     supports_sentry_mode: bool = False
     supports_air_conditioner: bool = False
+    supports_location: bool = False
 
     def matches(self, vehicle: Vehicle) -> bool:
         profile = vehicle.profile
@@ -57,6 +58,7 @@ DEVICES: tuple[VehicleSpec, ...] = (
         supports_now_departure_plan=True,
         supports_sentry_mode=True,
         supports_air_conditioner=True,
+        supports_location=True,
         sensors=(
             SensorSpec(
                 key="battery_soc",
@@ -164,6 +166,7 @@ DEVICES: tuple[VehicleSpec, ...] = (
         project_code="SERES-X1",
         supports_sentry_mode=True,
         supports_air_conditioner=True,
+        supports_location=True,
         sensors=(
             SensorSpec(
                 key="battery_soc",
@@ -280,6 +283,8 @@ def dynamic_sections(spec: VehicleSpec) -> dict[str, int]:
         sections["vehicleStatus"] = 0
     if spec.supports_air_conditioner:
         sections["hvac"] = 0
+    if spec.supports_location:
+        sections["location"] = 0
     return sections
 
 

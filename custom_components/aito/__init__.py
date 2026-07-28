@@ -235,8 +235,13 @@ def _remove_legacy_entities(
         for vehicle_id, spec in vehicle_specs.items()
         if spec.supports_air_conditioner
     }
+    location_unique_ids = {
+        f"{vehicle_id}_location"
+        for vehicle_id, spec in vehicle_specs.items()
+        if spec.supports_location
+    }
     for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
-        if entity.unique_id not in raw_status_unique_ids | mapped_unique_ids | switch_unique_ids | climate_unique_ids:
+        if entity.unique_id not in raw_status_unique_ids | mapped_unique_ids | switch_unique_ids | climate_unique_ids | location_unique_ids:
             registry.async_remove(entity.entity_id)
 
 

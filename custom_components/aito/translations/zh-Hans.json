@@ -99,6 +99,11 @@
           }
         }
       }
+    },
+    "device_tracker": {
+      "location": {
+        "name": "位置"
+      }
     }
   }
 }
