@@ -6,8 +6,10 @@
  * 骨架只构建一次，之后只更新文本与 class，好让开关的 CSS transition 能播出来。
  */
 
-const PREP_SWITCH = 'switch.aito_prep_car';
-const SENTRY_SWITCH = 'switch.aito_sentry';
+// 用集成实体的 translation_key 定位实体（稳定，不随 entity_id 命名变化）
+const PREP_KEY = 'now_departure_plan';
+const SENTRY_KEY = 'sentry_mode';
+const CLIMATE_KEY = 'air_conditioner';
 const PENDING_TIMEOUT_MS = 30000;
 // 第一个控制键：有备车能力(M8)就是备车开关，没有(M5)就退化为空调开关。
 // 车图由集成合成到 /local/aito/car.png。带版本号 bust 浏览器强缓存——
@@ -37,6 +39,24 @@ class AitoCard extends HTMLElement {
   getCardSize() { return 6; }
 
   _state(id) { return this._hass?.states[id]?.state ?? '--'; }
+
+  // 按集成 platform + translation_key 反查 entity_id（不依赖实体命名），带缓存
+  _eid(tk) {
+    const ents = this._hass?.entities;
+    if (!ents) return null;
+    if (ents !== this._entsRef) {
+      this._entsRef = ents;
+      this._map = {};
+      for (const id in ents) {
+        const e = ents[id];
+        if (e.platform === 'aito' && e.translation_key) this._map[e.translation_key] = id;
+      }
+    }
+    return this._map[tk] || null;
+  }
+
+  // 取某 translation_key 对应实体的 state
+  _s(tk) { return this._state(this._eid(tk)); }
 
   _build() {
     this.shadowRoot.innerHTML = `
@@ -205,35 +225,32 @@ class AitoCard extends HTMLElement {
         </div>
 
         <div class="grid">
-          <div class="cell" data-entity="sensor.aito_sum_range"><div class="cell-val" id="sum-range"></div><div class="cell-label">综合续航</div></div>
-          <div class="cell" data-entity="sensor.aito_inside_temp"><div class="cell-val" id="inside"></div><div class="cell-label">车内</div></div>
-          <div class="cell" data-entity="climate"><div class="cell-val" id="ac"></div><div class="cell-label">空调</div></div>
-          <div class="cell" data-entity="sensor.aito_parking"><div class="cell-val" id="status"></div><div class="cell-label">状态</div></div>
+          <div class="cell" data-entity="sum_remaining_mileage"><div class="cell-val" id="sum-range"></div><div class="cell-label">综合续航</div></div>
+          <div class="cell" data-entity="inside_temperature"><div class="cell-val" id="inside"></div><div class="cell-label">车内</div></div>
+          <div class="cell" data-entity="air_conditioner"><div class="cell-val" id="ac"></div><div class="cell-label">空调</div></div>
+          <div class="cell" data-entity="parking_status"><div class="cell-val" id="status"></div><div class="cell-label">状态</div></div>
         </div>
 
         <div class="grid">
-          <div class="cell" data-entity="sensor.aito_tire_fl"><div class="cell-val" id="tire-fl"></div><div class="cell-label">左前</div></div>
-          <div class="cell" data-entity="sensor.aito_tire_fr"><div class="cell-val" id="tire-fr"></div><div class="cell-label">右前</div></div>
-          <div class="cell" data-entity="sensor.aito_tire_rl"><div class="cell-val" id="tire-rl"></div><div class="cell-label">左后</div></div>
-          <div class="cell" data-entity="sensor.aito_tire_rr"><div class="cell-val" id="tire-rr"></div><div class="cell-label">右后</div></div>
+          <div class="cell" data-entity="tire_pressure_left_front"><div class="cell-val" id="tire-fl"></div><div class="cell-label">左前</div></div>
+          <div class="cell" data-entity="tire_pressure_right_front"><div class="cell-val" id="tire-fr"></div><div class="cell-label">右前</div></div>
+          <div class="cell" data-entity="tire_pressure_left_back"><div class="cell-val" id="tire-rl"></div><div class="cell-label">左后</div></div>
+          <div class="cell" data-entity="tire_pressure_right_back"><div class="cell-val" id="tire-rr"></div><div class="cell-label">右后</div></div>
         </div>
 
         <div class="footer">
-          <span data-entity="sensor.aito_updated_at" id="updated"></span>
-          <span data-entity="sensor.aito_odometer" id="odo"></span>
+          <span data-entity="last_updated_at" id="updated"></span>
+          <span data-entity="total_mileage" id="odo"></span>
         </div>
       </div>
     `;
 
     this._$ = (id) => this.shadowRoot.getElementById(id);
     this._$('prep-sw').addEventListener('click', () => this._togglePrimary());
-    this._$('sentry-sw').addEventListener('click', () => this._toggle(SENTRY_SWITCH));
-    // 每个状态格点击打开对应实体的详情弹窗（空调格动态解析到 climate 实体）
+    this._$('sentry-sw').addEventListener('click', () => this._toggle(this._eid(SENTRY_KEY)));
+    // 每个状态格点击打开对应实体的详情弹窗（data-entity 存 translation_key，运行时反查）
     this.shadowRoot.querySelectorAll('[data-entity]').forEach((el) => {
-      el.addEventListener('click', () => {
-        const id = el.dataset.entity === 'climate' ? this._climateId() : el.dataset.entity;
-        this._moreInfo(id);
-      });
+      el.addEventListener('click', () => this._moreInfo(this._eid(el.dataset.entity)));
     });
   }
 
@@ -245,10 +262,11 @@ class AitoCard extends HTMLElement {
     );
   }
 
-  // 定位本车的 aito 空调 climate 实体：优先固定 id，回退按 rapid_cool preset 扫描
+  // 定位本车的 aito 空调 climate 实体：优先注册表反查，回退按 rapid_cool preset 扫描
   _climateId() {
+    const byReg = this._eid(CLIMATE_KEY);
+    if (byReg) return byReg;
     const s = this._hass?.states || {};
-    if (s['climate.aito_ac']) return 'climate.aito_ac';
     return Object.keys(s).find(
       (id) =>
         id.startsWith('climate.') &&
@@ -259,8 +277,9 @@ class AitoCard extends HTMLElement {
 
   // 第一个控制键的当前配置：优先备车，其次空调
   _primary() {
-    if (this._hass?.states[PREP_SWITCH]) {
-      return { entity: PREP_SWITCH, domain: 'switch', name: '🚗 备车' };
+    const prep = this._eid(PREP_KEY);
+    if (prep && this._hass?.states[prep]) {
+      return { entity: prep, domain: 'switch', name: '🚗 备车' };
     }
     const climate = this._climateId();
     if (climate) {
@@ -373,44 +392,44 @@ class AitoCard extends HTMLElement {
       Number.isFinite(parseFloat(v)) ? parseFloat(v).toFixed(digits) : '--';
     const int = (v) => (Number.isFinite(parseFloat(v)) ? String(Math.round(parseFloat(v))) : '--');
 
-    const charge = this._state('sensor.aito_charge_state');
-    const soc = this._state('sensor.aito_soc');
+    const charge = this._s('charge_status');
+    const soc = this._s('battery_soc');
     const socN = parseFloat(soc) || 0;
 
     // 车名取接口的车型名；实体未就绪时回退
-    const model = this._state('sensor.aito_model');
+    const model = this._s('model');
     const title = model && model !== '--' && model !== 'unknown' ? model : '我的车';
     this._$('name').textContent =
       `${title} · ${charge === '未充电' || charge === '--' ? charge : '⚡' + charge}`;
     this._$('soc').textContent = int(soc);
-    this._$('elec').textContent = `⚡ ${int(this._state('sensor.aito_elec_range'))} km`;
-    this._$('fuel').textContent = `⛽ ${int(this._state('sensor.aito_fuel_range'))} km`;
+    this._$('elec').textContent = `⚡ ${int(this._s('electric_wltc_remaining_mileage'))} km`;
+    this._$('fuel').textContent = `⛽ ${int(this._s('fuel_wltc_remaining_mileage'))} km`;
 
     const bar = this._$('bar');
     bar.style.width = `${socN}%`;
     bar.style.background = socN > 60 ? '#4ade80' : socN > 30 ? '#facc15' : '#f87171';
 
     this._updatePrimary();
-    this._updateSwitch(SENTRY_SWITCH, 'sentry-sw', 'sentry-state');
+    this._updateSwitch(this._eid(SENTRY_KEY), 'sentry-sw', 'sentry-state');
 
-    this._$('sum-range').textContent = `🛣️ ${int(this._state('sensor.aito_sum_range'))} km`;
-    this._$('inside').textContent = `🌡️ ${num(this._state('sensor.aito_inside_temp'))}°`;
-    this._$('ac').textContent = `❄️ ${num(this._state('sensor.aito_ac_temp'))}°`;
+    this._$('sum-range').textContent = `🛣️ ${int(this._s('sum_remaining_mileage'))} km`;
+    this._$('inside').textContent = `🌡️ ${num(this._s('inside_temperature'))}°`;
+    this._$('ac').textContent = `❄️ ${num(this._s('air_conditioner_target_temperature'))}°`;
 
-    const parkingState = this._state('sensor.aito_parking');
+    const parkingState = this._s('parking_status');
     const parked = parkingState === '停泊';
     this._$('status').textContent =
       parkingState === '--' || parkingState === 'unknown' || parkingState === 'unavailable'
         ? '🚘 --'
         : `${parked ? '🅿️' : '🚗'} ${parkingState}`;
 
-    for (const [id, entity] of [
-      ['tire-fl', 'sensor.aito_tire_fl'],
-      ['tire-fr', 'sensor.aito_tire_fr'],
-      ['tire-rl', 'sensor.aito_tire_rl'],
-      ['tire-rr', 'sensor.aito_tire_rr'],
+    for (const [id, tk] of [
+      ['tire-fl', 'tire_pressure_left_front'],
+      ['tire-fr', 'tire_pressure_right_front'],
+      ['tire-rl', 'tire_pressure_left_back'],
+      ['tire-rr', 'tire_pressure_right_back'],
     ]) {
-      const v = parseFloat(this._state(entity));
+      const v = parseFloat(this._s(tk));
       const el = this._$(id);
       if (Number.isFinite(v) && v > 0) {
         el.textContent = v.toFixed(1);
@@ -422,8 +441,8 @@ class AitoCard extends HTMLElement {
       }
     }
 
-    this._$('updated').textContent = `更新于 ${this._fmtTime(this._state('sensor.aito_updated_at'))}`;
-    this._$('odo').textContent = `总里程 ${num(this._state('sensor.aito_odometer'))} km`;
+    this._$('updated').textContent = `更新于 ${this._fmtTime(this._s('last_updated_at'))}`;
+    this._$('odo').textContent = `总里程 ${num(this._s('total_mileage'))} km`;
   }
 
   _fmtTime(iso) {
