@@ -76,6 +76,42 @@
       },
       "average_fuel_consumption": {
         "name": "平均油耗"
+      },
+      "sum_remaining_mileage": {
+        "name": "综合剩余里程"
+      },
+      "charge_status": {
+        "name": "充电状态"
+      },
+      "parking_status": {
+        "name": "驻车状态"
+      },
+      "inside_temperature": {
+        "name": "车内温度"
+      },
+      "air_conditioner_target_temperature": {
+        "name": "空调设定温度"
+      },
+      "tire_pressure_left_front": {
+        "name": "左前胎压"
+      },
+      "tire_pressure_right_front": {
+        "name": "右前胎压"
+      },
+      "tire_pressure_left_back": {
+        "name": "左后胎压"
+      },
+      "tire_pressure_right_back": {
+        "name": "右后胎压"
+      },
+      "last_updated_at": {
+        "name": "车端数据时间"
+      },
+      "last_online_at": {
+        "name": "车辆最后在线"
+      },
+      "model": {
+        "name": "车型"
       }
     },
     "switch": {
