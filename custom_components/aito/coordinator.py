@@ -16,7 +16,7 @@ except ModuleNotFoundError:
     class ConfigEntryAuthFailed(RuntimeError):
         pass
 
-from .api import AitoApiClient, AitoApiError
+from .api import AitoApiClient, AitoApiError, AitoCommandError
 from .auth import P256KeyPair, extract_credentials, extract_vehicle_authorization, session_key_status
 from .const import (
     CONF_ACCESS_TOKEN,
@@ -48,6 +48,9 @@ from .storage import decrypt_password, decrypt_session_context, encrypt_session_
 _LOGGER = logging.getLogger(__name__)
 
 _ENERGY_REPORT_REFRESH_SECONDS = 60 * 60
+
+# The vehicle answers a command that would not change its state with this code.
+_COMMAND_STATE_UNCHANGED_CODES = frozenset({302, "302"})
 
 
 class AitoDataCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
@@ -103,17 +106,35 @@ class AitoDataCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         return await self._async_apig_request(self.client.dynamic_infos, vehicle_id, sections)
 
     async def async_control_now_departure_plan(self, vehicle_id: str, *, enabled: bool) -> None:
-        await self._async_apig_request(
+        await self._async_run_vehicle_command(
             partial(self.client.control_now_departure_plan, vehicle_id, enabled=enabled),
-            retry_after_refresh=False,
+            "now departure plan",
         )
-        await self.async_request_refresh()
 
     async def async_control_sentry_mode(self, vehicle_id: str, *, enabled: bool) -> None:
-        await self._async_apig_request(
+        await self._async_run_vehicle_command(
             partial(self.client.control_sentry_mode, vehicle_id, enabled=enabled),
-            retry_after_refresh=False,
+            "sentry mode",
         )
+
+    async def _async_run_vehicle_command(self, request, description: str) -> None:
+        """Run a vehicle command, treating "state unchanged" as success.
+
+        The vehicle rejects a command that would not change anything (turning off
+        sentry mode while it is already off) with resultCode 302. That is not a
+        failure worth raising at the user, so log it and let the refresh below
+        report whatever the vehicle actually thinks its state is.
+        """
+        try:
+            await self._async_apig_request(request, retry_after_refresh=False)
+        except AitoCommandError as error:
+            if error.result_code not in _COMMAND_STATE_UNCHANGED_CODES:
+                raise
+            _LOGGER.info(
+                "AITO %s command reported resultCode %r (state already applied); refreshing instead",
+                description,
+                error.result_code,
+            )
         await self.async_request_refresh()
 
     async def async_control_air_conditioner(
