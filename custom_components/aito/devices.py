@@ -355,8 +355,44 @@ DEVICES: tuple[VehicleSpec, ...] = (
 )
 
 
-def vehicle_spec_for(vehicle: Vehicle) -> VehicleSpec | None:
-    return next((spec for spec in DEVICES if spec.matches(vehicle)), None)
+# Power types with no combustion engine, so the fuel sensors never apply.
+_ELECTRIC_ONLY_POWER_TYPES = frozenset({"BEV", "EV", "PURE_ELECTRIC"})
+_FUEL_SENSOR_KEYS = frozenset(
+    {"fuel_wltc_remaining_mileage", "fuel_remaining", "average_fuel_consumption"}
+)
+
+
+def _generic_spec(vehicle: Vehicle) -> VehicleSpec:
+    """Build a best-effort spec for a model without an explicit entry.
+
+    Every sensor reads the same dynamic-infos sections that all models return,
+    so a field the vehicle does not report simply stays unknown. The controls
+    are enabled as well, because each control entity already reports itself
+    unavailable while its backing field is missing (departure plan list, sentry
+    mode status, hvac section) and a command the vehicle rejects surfaces as an
+    error instead of acting. That way a model nobody has declared yet still
+    exposes the data and controls it actually has, rather than nothing.
+    """
+    profile = vehicle.profile
+    sensors = _COMMON_SENSORS
+    if (profile.power_type or "").upper() in _ELECTRIC_ONLY_POWER_TYPES:
+        sensors = tuple(sensor for sensor in sensors if sensor.key not in _FUEL_SENSOR_KEYS)
+    return VehicleSpec(
+        key="generic",
+        enterprise_code=profile.enterprise_code or "",
+        project_code=profile.project_code or "",
+        sensors=sensors,
+        supports_now_departure_plan=True,
+        supports_sentry_mode=True,
+        supports_air_conditioner=True,
+        supports_location=True,
+    )
+
+
+def vehicle_spec_for(vehicle: Vehicle) -> VehicleSpec:
+    """Return the declared spec for this vehicle, or a generic best-effort one."""
+    declared = next((spec for spec in DEVICES if spec.matches(vehicle)), None)
+    return declared if declared is not None else _generic_spec(vehicle)
 
 
 def dynamic_sections(spec: VehicleSpec) -> dict[str, int]:
