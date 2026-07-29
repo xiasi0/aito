@@ -13,9 +13,7 @@ from .const import DEFAULT_USER_AGENT
 
 ResourceDownloader = Callable[[str, Path], None]
 
-# The interactive car model ships as layered PNGs; this one is the full body
-# render used as the background of the App's vehicle view.
-_CAR_IMAGE_PREFERRED = "carmodel/12_skeleton/background.png"
+# The interactive car model ships as layered PNGs under this prefix.
 _CAR_IMAGE_SEARCH_PREFIX = "carmodel/"
 
 
@@ -24,30 +22,49 @@ class AitoResourceError(RuntimeError):
 
 
 # The car model is layered PNGs; the skeleton alone is a doorless shell. The
-# App rebuilds the full car by stacking each part over it. Each door/window is
-# a bodymovin animation whose CLOSED state is the LAST frame of its
-# *__open_to_close group (the *__close_to_open first frame is not fully shut and
-# leaves a black gap). Paint order (bottom to top): doors, windows, windshield,
-# trunk/charging-cap. The left-front door is painted once more on top, because
+# App rebuilds the full car by stacking each part over it. Layer groups are
+# matched by keyword rather than exact path, because the numeric prefixes are
+# not guaranteed to be identical across vehicle models. Each door/window group
+# is a bodymovin animation whose CLOSED state is the LAST frame of its
+# *__open_to_close variant (the *__close_to_open first frame is not fully shut
+# and leaves a black gap). The lamp layer is deliberately skipped so the
+# daytime running lights are not lit.
+_CAR_SKELETON_KEYWORD = "skeleton"
+_CAR_WINDSHIELD_KEYWORD = "windshield"
+_CAR_CLOSING_SUFFIX = "open_to_close"
+# Paint order, bottom to top. The left-front door is painted again last because
 # the window layers' black edges otherwise cover its trailing edge and leave a
-# thick black seam at the B-pillar. The lamp layer is intentionally omitted so
-# the daytime running lights are not lit.
-_CAR_COMPOSITE_GROUPS = (
-    "carmodel/06_left_front_door_close__open_to_close",
-    "carmodel/07_right_front_door_close__open_to_close",
-    "carmodel/08_left_rear_door_close__open_to_close",
-    "carmodel/09_right_rear_door_close__open_to_close",
-    "carmodel/02_left_front_window__open_to_close",
-    "carmodel/03_left_rear_window__open_to_close",
-    "carmodel/04_right_front_window__open_to_close",
-    "carmodel/05_right_rear_window__open_to_close",
-)
-_CAR_COMPOSITE_LATE = (
-    "carmodel/10_trunk__open_to_close",
-    "carmodel/11_charging_port_cap_open_to_close",
-)
-_CAR_COMPOSITE_WINDSHIELD = "carmodel/01_0_windshield/background.png"
-_CAR_COMPOSITE_TOP_GROUP = "carmodel/06_left_front_door_close__open_to_close"
+# thick black seam at the B-pillar.
+_CAR_DOOR_KEYWORDS = ("left_front_door", "right_front_door", "left_rear_door", "right_rear_door")
+_CAR_WINDOW_KEYWORDS = ("left_front_window", "left_rear_window", "right_front_window", "right_rear_window")
+_CAR_LATE_KEYWORDS = ("trunk", "charging_port")
+_CAR_TOP_KEYWORD = "left_front_door"
+
+
+def _layer_groups(names: set[str]) -> list[str]:
+    """Return the distinct carmodel animation group directories in the archive."""
+    groups = set()
+    for name in names:
+        if not name.startswith(_CAR_IMAGE_SEARCH_PREFIX) or "/images/" not in name:
+            continue
+        groups.add(name.split("/images/", 1)[0])
+    return sorted(groups)
+
+
+def _find_group(groups: list[str], keyword: str) -> str | None:
+    """Find the closed-state animation group whose name contains keyword."""
+    for group in groups:
+        if keyword in group and group.endswith(_CAR_CLOSING_SUFFIX):
+            return group
+    return None
+
+
+def _find_background(names: set[str], keyword: str) -> str | None:
+    """Find a static background.png layer whose directory contains keyword."""
+    for name in sorted(names):
+        if name.startswith(_CAR_IMAGE_SEARCH_PREFIX) and keyword in name and name.endswith("background.png"):
+            return name
+    return None
 
 
 def _closed_frame(names: set[str], group: str) -> str | None:
@@ -94,20 +111,26 @@ def _compose_full_car(bundle: zipfile.ZipFile) -> bytes | None:
         except Exception:
             return None
 
-    base = load(_CAR_IMAGE_PREFERRED)
+    base = load(_find_background(names, _CAR_SKELETON_KEYWORD))
     if base is None:
         return None
 
     def stack(image, layer):
         return Image.alpha_composite(image, layer) if layer is not None and layer.size == image.size else image
 
-    for group in _CAR_COMPOSITE_GROUPS:
-        base = stack(base, load(_closed_frame(names, group)))
-    base = stack(base, load(_CAR_COMPOSITE_WINDSHIELD))
-    for group in _CAR_COMPOSITE_LATE:
-        base = stack(base, load(_closed_frame(names, group)))
+    groups = _layer_groups(names)
+
+    def closed(keyword: str):
+        group = _find_group(groups, keyword)
+        return load(_closed_frame(names, group)) if group else None
+
+    for keyword in _CAR_DOOR_KEYWORDS + _CAR_WINDOW_KEYWORDS:
+        base = stack(base, closed(keyword))
+    base = stack(base, load(_find_background(names, _CAR_WINDSHIELD_KEYWORD)))
+    for keyword in _CAR_LATE_KEYWORDS:
+        base = stack(base, closed(keyword))
     # Left-front door on top, over the window layers, to hide the B-pillar seam.
-    base = stack(base, load(_closed_frame(names, _CAR_COMPOSITE_TOP_GROUP)))
+    base = stack(base, closed(_CAR_TOP_KEYWORD))
     buffer = io.BytesIO()
     base.save(buffer, format="PNG")
     return buffer.getvalue()
@@ -129,7 +152,7 @@ def extract_car_image(archive: str | Path, destination: str | Path) -> bool:
             payload = _compose_full_car(bundle)
             if payload is None:
                 names = bundle.namelist()
-                chosen = _CAR_IMAGE_PREFERRED if _CAR_IMAGE_PREFERRED in names else None
+                chosen = _find_background(set(names), _CAR_SKELETON_KEYWORD)
                 if chosen is None:
                     pngs = [
                         name
