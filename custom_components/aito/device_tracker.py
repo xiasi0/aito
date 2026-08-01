@@ -58,7 +58,7 @@ class AitoVehicleLocationTracker(CoordinatorEntity[AitoDataCoordinator], Tracker
         if not isinstance(location, dict):
             return None
         coordinates = location.get("location")
-        if not isinstance(coordinates, dict) or coordinates.get("validFlag") not in {1, "1"}:
+        if not isinstance(coordinates, dict):
             return None
         latitude = coordinates.get("latitude")
         longitude = coordinates.get("longitude")
