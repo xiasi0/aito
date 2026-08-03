@@ -61,8 +61,38 @@ def _reject_sentinel(value: Any) -> Any:
     return value
 
 
+def _charge_channel_value(data: dict[str, Any], key: str) -> int | None:
+    try:
+        status = int(value_at_path(data, ("charge", key)))
+    except (TypeError, ValueError):
+        return None
+    return status if status >= 0 else None
+
+
+def _charge_channel_status(data: dict[str, Any]) -> int | None:
+    statuses = [
+        status
+        for key in ("acChargeStatus", "dcChargeStatus")
+        if (status := _charge_channel_value(data, key)) is not None
+    ]
+    return max(statuses) if statuses else None
+
+
+def _charge_current(data: dict[str, Any]) -> float | int | None:
+    """Select the active charging channel, as the official app does."""
+    channel_status = _charge_channel_status(data)
+    if channel_status is None or channel_status == 0:
+        return _absolute_number(value_at_path(data, ("charge", "chargeCurrent")))
+    if channel_status != 6:
+        return 0
+
+    if _charge_channel_value(data, "acChargeStatus") == 6:
+        return _absolute_number(value_at_path(data, ("charge", "acChargeCurrent")))
+    return _absolute_number(value_at_path(data, ("charge", "dcChargeCurrent")))
+
+
 def _charge_power_kw(data: dict[str, Any]) -> float | None:
-    current = _absolute_number(value_at_path(data, ("charge", "chargeCurrent")))
+    current = _charge_current(data)
     voltage = _absolute_number(value_at_path(data, ("charge", "chargeVoltage")))
     if current is None or voltage is None:
         return None
@@ -83,7 +113,27 @@ def _tenths(value: Any) -> float | None:
     return None
 
 
-_CHARGE_STATUS_TEXT = {0: "未充电", 1: "充电中", 2: "充电完成", 3: "充电故障", 4: "充电暂停"}
+_CHARGE_STATUS_TEXT = {
+    0: "未充电",
+    1: "充电中",
+    2: "充电完成",
+    3: "充电故障",
+    4: "充电暂停",
+    5: "充电故障",
+    6: "充电中",
+    7: "充电已停止",
+    18: "电池预热中",
+    25: "预约充电",
+}
+_CHANNEL_CHARGE_STATUS_TEXT = {
+    0: "未充电",
+    1: "已连接、未充电",
+    5: "充电故障",
+    6: "充电中",
+    7: "充电已停止",
+    18: "电池预热中",
+    25: "预约充电",
+}
 
 
 def _charge_status_text(value: Any) -> str | None:
@@ -94,6 +144,13 @@ def _charge_status_text(value: Any) -> str | None:
     except (TypeError, ValueError):
         return None
     return _CHARGE_STATUS_TEXT.get(status, f"未知({status})")
+
+
+def _charge_display_status_text(data: dict[str, Any]) -> str | None:
+    channel_status = _charge_channel_status(data)
+    if channel_status is None or channel_status == 0:
+        return _charge_status_text(value_at_path(data, ("charge", "chargeStatus")))
+    return _CHANNEL_CHARGE_STATUS_TEXT.get(channel_status, f"未知({channel_status})")
 
 
 def _epoch_millis(value: Any) -> datetime | None:
@@ -150,7 +207,7 @@ DEVICES: tuple[VehicleSpec, ...] = (
                 device_class="current",
                 native_unit_of_measurement="A",
                 state_class="measurement",
-                converter=_absolute_number,
+                value_getter=_charge_current,
                 sticky=True,
             ),
             SensorSpec(
@@ -266,7 +323,7 @@ DEVICES: tuple[VehicleSpec, ...] = (
                 key="charge_status",
                 path=("charge", "chargeStatus"),
                 translation_key="charge_status",
-                converter=_charge_status_text,
+                value_getter=_charge_display_status_text,
             ),
             SensorSpec(
                 key="parking_status",
@@ -369,7 +426,7 @@ DEVICES: tuple[VehicleSpec, ...] = (
                 device_class="current",
                 native_unit_of_measurement="A",
                 state_class="measurement",
-                converter=_absolute_number,
+                value_getter=_charge_current,
                 sticky=True,
             ),
             SensorSpec(
@@ -485,7 +542,7 @@ DEVICES: tuple[VehicleSpec, ...] = (
                 key="charge_status",
                 path=("charge", "chargeStatus"),
                 translation_key="charge_status",
-                converter=_charge_status_text,
+                value_getter=_charge_display_status_text,
             ),
             SensorSpec(
                 key="parking_status",
@@ -590,7 +647,7 @@ DEVICES: tuple[VehicleSpec, ...] = (
                 device_class="current",
                 native_unit_of_measurement="A",
                 state_class="measurement",
-                converter=_absolute_number,
+                value_getter=_charge_current,
                 sticky=True,
             ),
             SensorSpec(
@@ -706,7 +763,7 @@ DEVICES: tuple[VehicleSpec, ...] = (
                 key="charge_status",
                 path=("charge", "chargeStatus"),
                 translation_key="charge_status",
-                converter=_charge_status_text,
+                value_getter=_charge_display_status_text,
             ),
             SensorSpec(
                 key="parking_status",
@@ -719,7 +776,7 @@ DEVICES: tuple[VehicleSpec, ...] = (
                 path=("hvac", "insideTemp"),
                 translation_key="inside_temperature",
                 device_class="temperature",
-                native_unit_of_measurement="掳C",
+                native_unit_of_measurement="°C",
                 state_class="measurement",
                 converter=_tenths,
                 sticky=True,
@@ -729,7 +786,7 @@ DEVICES: tuple[VehicleSpec, ...] = (
                 path=("hvac", "remoteTemp"),
                 translation_key="air_conditioner_target_temperature",
                 device_class="temperature",
-                native_unit_of_measurement="掳C",
+                native_unit_of_measurement="°C",
                 state_class="measurement",
                 converter=_tenths,
                 sticky=True,
