@@ -83,8 +83,13 @@
       "charge_status": {
         "name": "充电状态"
       },
-      "parking_status": {
-        "name": "驻车状态"
+      "vehicle_move_status": {
+        "name": "车辆移动状态",
+        "state": {
+          "0": "停泊中",
+          "1": "行驶中",
+          "2": "准备中"
+        }
       },
       "inside_temperature": {
         "name": "车内温度"

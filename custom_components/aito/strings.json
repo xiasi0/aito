@@ -83,8 +83,13 @@
       "charge_status": {
         "name": "Charging status"
       },
-      "parking_status": {
-        "name": "Parking status"
+      "vehicle_move_status": {
+        "name": "Vehicle move status",
+        "state": {
+          "0": "Parked",
+          "1": "Driving",
+          "2": "Preparing"
+        }
       },
       "inside_temperature": {
         "name": "Cabin temperature"

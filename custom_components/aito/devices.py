@@ -160,14 +160,13 @@ def _epoch_millis(value: Any) -> datetime | None:
     return None
 
 
-def _parking_text(value: Any) -> str | None:
-    """Report the electric park brake as the parked or driving state."""
-    if value is None:
-        return None
+def _vehicle_move_status(value: Any) -> int | None:
+    """Keep valid official vehicleMoveStatus enum values."""
     try:
-        return "停泊" if int(value) == 2 else "行驶"
+        status = int(value)
     except (TypeError, ValueError):
         return None
+    return status if status in {0, 1, 2} else None
 
 
 DEVICES: tuple[VehicleSpec, ...] = (
@@ -326,10 +325,10 @@ DEVICES: tuple[VehicleSpec, ...] = (
                 value_getter=_charge_display_status_text,
             ),
             SensorSpec(
-                key="parking_status",
-                path=("vehicleStatus", "epbSts"),
-                translation_key="parking_status",
-                converter=_parking_text,
+                key="vehicle_move_status",
+                path=("vehicleStatus", "vehicleMoveStatus"),
+                translation_key="vehicle_move_status",
+                converter=_vehicle_move_status,
             ),
             SensorSpec(
                 key="inside_temperature",
@@ -545,10 +544,10 @@ DEVICES: tuple[VehicleSpec, ...] = (
                 value_getter=_charge_display_status_text,
             ),
             SensorSpec(
-                key="parking_status",
-                path=("vehicleStatus", "epbSts"),
-                translation_key="parking_status",
-                converter=_parking_text,
+                key="vehicle_move_status",
+                path=("vehicleStatus", "vehicleMoveStatus"),
+                translation_key="vehicle_move_status",
+                converter=_vehicle_move_status,
             ),
             SensorSpec(
                 key="inside_temperature",
@@ -766,10 +765,10 @@ DEVICES: tuple[VehicleSpec, ...] = (
                 value_getter=_charge_display_status_text,
             ),
             SensorSpec(
-                key="parking_status",
-                path=("vehicleStatus", "epbSts"),
-                translation_key="parking_status",
-                converter=_parking_text,
+                key="vehicle_move_status",
+                path=("vehicleStatus", "vehicleMoveStatus"),
+                translation_key="vehicle_move_status",
+                converter=_vehicle_move_status,
             ),
             SensorSpec(
                 key="inside_temperature",

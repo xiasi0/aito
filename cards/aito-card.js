@@ -10,6 +10,7 @@
 const PREP_KEY = 'now_departure_plan';
 const SENTRY_KEY = 'sentry_mode';
 const CLIMATE_KEY = 'air_conditioner';
+const MOVE_STATUS_KEY = 'vehicle_move_status';
 const PENDING_TIMEOUT_MS = 30000;
 // 第一个控制键：有备车能力(M8)就是备车开关，没有(M5)就退化为空调开关。
 // 车图由集成合成到 /local/aito/car.png。带版本号 bust 浏览器强缓存——
@@ -228,7 +229,7 @@ class AitoCard extends HTMLElement {
           <div class="cell" data-entity="sum_remaining_mileage"><div class="cell-val" id="sum-range"></div><div class="cell-label">综合续航</div></div>
           <div class="cell" data-entity="inside_temperature"><div class="cell-val" id="inside"></div><div class="cell-label">车内</div></div>
           <div class="cell" data-entity="air_conditioner"><div class="cell-val" id="ac"></div><div class="cell-label">空调</div></div>
-          <div class="cell" data-entity="parking_status"><div class="cell-val" id="status"></div><div class="cell-label">状态</div></div>
+          <div class="cell" data-entity="vehicle_move_status"><div class="cell-val" id="status"></div><div class="cell-label">状态</div></div>
         </div>
 
         <div class="grid">
@@ -416,12 +417,15 @@ class AitoCard extends HTMLElement {
     this._$('inside').textContent = `🌡️ ${num(this._s('inside_temperature'))}°`;
     this._$('ac').textContent = `❄️ ${num(this._s('air_conditioner_target_temperature'))}°`;
 
-    const parkingState = this._s('parking_status');
-    const parked = parkingState === '停泊';
+    const moveStatus = this._s(MOVE_STATUS_KEY);
+    const moveStatusTranslationKey = `component.aito.entity.sensor.${MOVE_STATUS_KEY}.state.${moveStatus}`;
+    const localizedMoveStatus = this._hass?.localize?.(moveStatusTranslationKey);
+    const displayMoveStatus =
+      localizedMoveStatus === moveStatusTranslationKey ? moveStatus : localizedMoveStatus || moveStatus;
     this._$('status').textContent =
-      parkingState === '--' || parkingState === 'unknown' || parkingState === 'unavailable'
+      moveStatus === '--' || moveStatus === 'unknown' || moveStatus === 'unavailable'
         ? '🚘 --'
-        : `${parked ? '🅿️' : '🚗'} ${parkingState}`;
+        : `${moveStatus === '0' ? '🅿️' : '🚗'} ${displayMoveStatus}`;
 
     for (const [id, tk] of [
       ['tire-fl', 'tire_pressure_left_front'],
